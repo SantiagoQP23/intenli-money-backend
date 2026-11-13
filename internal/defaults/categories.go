@@ -55,12 +55,67 @@ var Business = []Category{
 	{"EXPENSE", "Otros gastos", "circle-ellipsis"},
 }
 
-// For returns the defaults for a workspace type.
-func For(workspaceType string) []Category {
-	if workspaceType == "BUSINESS" {
+// PersonalEN is Personal in English, in the same order with the same icons.
+var PersonalEN = []Category{
+	{"INCOME", "Salary", "briefcase"},
+	{"INCOME", "Own business", "store"},
+	{"INCOME", "Investments", "trending-up"},
+	{"INCOME", "Gifts received", "gift"},
+	{"INCOME", "Other income", "circle-plus"},
+
+	{"EXPENSE", "Groceries", "utensils"},
+	{"EXPENSE", "Restaurants", "coffee"},
+	{"EXPENSE", "Transportation", "bus"},
+	{"EXPENSE", "Housing", "house"},
+	{"EXPENSE", "Utilities", "zap"},
+	{"EXPENSE", "Health", "heart-pulse"},
+	{"EXPENSE", "Education", "graduation-cap"},
+	{"EXPENSE", "Clothing", "shirt"},
+	{"EXPENSE", "Home", "sofa"},
+	{"EXPENSE", "Entertainment", "clapperboard"},
+	{"EXPENSE", "Subscriptions", "repeat"},
+	{"EXPENSE", "Personal care", "sparkles"},
+	{"EXPENSE", "Pets", "paw-print"},
+	{"EXPENSE", "Gifts and donations", "heart-handshake"},
+	{"EXPENSE", "Other expenses", "circle-ellipsis"},
+}
+
+// BusinessEN is Business in English, in the same order with the same icons.
+var BusinessEN = []Category{
+	{"INCOME", "Sales", "shopping-cart"},
+	{"INCOME", "Services", "handshake"},
+	{"INCOME", "Interest", "percent"},
+	{"INCOME", "Other income", "circle-plus"},
+
+	{"EXPENSE", "Inventory", "package"},
+	{"EXPENSE", "Suppliers", "truck"},
+	{"EXPENSE", "Payroll", "users"},
+	{"EXPENSE", "Rent", "building"},
+	{"EXPENSE", "Utilities", "zap"},
+	{"EXPENSE", "Shipping and transport", "send"},
+	{"EXPENSE", "Marketing", "megaphone"},
+	{"EXPENSE", "Taxes", "landmark"},
+	{"EXPENSE", "Bank fees", "credit-card"},
+	{"EXPENSE", "Maintenance", "wrench"},
+	{"EXPENSE", "Software and subscriptions", "laptop"},
+	{"EXPENSE", "Professional fees", "scale"},
+	{"EXPENSE", "Other expenses", "circle-ellipsis"},
+}
+
+// For returns the defaults for a workspace type in a language ("es" or
+// "en"; anything else gets Spanish).
+func For(workspaceType, locale string) []Category {
+	business := workspaceType == "BUSINESS"
+	switch {
+	case business && locale == "en":
+		return BusinessEN
+	case business:
 		return Business
+	case locale == "en":
+		return PersonalEN
+	default:
+		return Personal
 	}
-	return Personal
 }
 
 // Icons are the icons a category may use, in the order the app's picker

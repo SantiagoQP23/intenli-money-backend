@@ -48,6 +48,10 @@ Check it: `curl localhost:8080/healthz` (process is up) and `curl localhost:8080
 
 All `/v1` routes except `/v1/auth/*` need `Authorization: Bearer <access_token>`.
 
+Errors are `{"error": {"code", "message"}}`. The `code` is the contract: the app shows its own translated text for it, and `message` is English for developers. Form errors a user can cause have specific codes (`invalid_email`, `invalid_password`, `category_exists`…); other bad input is `invalid_request`.
+
+Languages: Spanish (`es`, the default) and English (`en`). Sign-up (password or Google) saves the language from `Accept-Language`, and a workspace's default categories are created in its creator's language.
+
 | Route | Who | What |
 | --- | --- | --- |
 | `POST /v1/auth/register` | anyone | `{email, password, name?, base_currency?}`: creates the user and their personal workspace, returns a session |
@@ -55,7 +59,7 @@ All `/v1` routes except `/v1/auth/*` need `Authorization: Bearer <access_token>`
 | `POST /v1/auth/google` | anyone | `{id_token}` from Google Sign-In on the app |
 | `POST /v1/auth/refresh` | anyone | `{refresh_token}`: rotates it and returns a new session |
 | `POST /v1/auth/logout` | anyone | `{refresh_token}`: ends that session |
-| `GET`, `PATCH /v1/users/me` | signed in | Profile (`{name}`) |
+| `GET`, `PATCH /v1/users/me` | signed in | Profile (`{name?, locale?}`; `locale` is `es` or `en`) |
 | `GET`, `POST /v1/workspaces` | signed in | List yours (personal first) / create a `BUSINESS` or `SHARED` one |
 | `GET /v1/workspaces/{id}` | member | Includes your `role` |
 | `PATCH`, `DELETE /v1/workspaces/{id}` | owner | Rename / archive (personal can't be archived) |

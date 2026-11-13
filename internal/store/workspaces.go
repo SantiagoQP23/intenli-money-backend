@@ -83,7 +83,12 @@ func CreateWorkspace(ctx context.Context, db DB, name string, typ WorkspaceType,
 	if err := AddMember(ctx, db, m.ID, creator, RoleOwner); err != nil {
 		return Membership{}, err
 	}
-	if err := CreateDefaultCategories(ctx, db, m.ID, typ); err != nil {
+	// Default categories are created in the creator's language.
+	var locale string
+	if err := db.QueryRow(ctx, `SELECT locale FROM users WHERE id = $1`, creator).Scan(&locale); err != nil {
+		return Membership{}, err
+	}
+	if err := CreateDefaultCategories(ctx, db, m.ID, typ, locale); err != nil {
 		return Membership{}, err
 	}
 	m.Role = RoleOwner

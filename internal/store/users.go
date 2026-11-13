@@ -14,23 +14,27 @@ type User struct {
 	EmailVerified bool
 	Name          string
 	PasswordHash  *string
+	Locale        string // "es" or "en"
 	CreatedAt     time.Time
 }
 
-const userColumns = `id, email, email_verified, name, password_hash, created_at`
+// ValidLocale reports whether locale is a language the app supports.
+func ValidLocale(locale string) bool { return locale == "es" || locale == "en" }
+
+const userColumns = `id, email, email_verified, name, password_hash, locale, created_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.EmailVerified, &u.Name, &u.PasswordHash, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.EmailVerified, &u.Name, &u.PasswordHash, &u.Locale, &u.CreatedAt)
 	return u, notFound(err)
 }
 
 // CreateUser returns ErrConflict if the email is already registered.
-func CreateUser(ctx context.Context, db DB, email, name string, passwordHash *string, emailVerified bool) (User, error) {
+func CreateUser(ctx context.Context, db DB, email, name string, passwordHash *string, emailVerified bool, locale string) (User, error) {
 	u, err := scanUser(db.QueryRow(ctx,
-		`INSERT INTO users (email, name, password_hash, email_verified)
-		 VALUES ($1, $2, $3, $4) RETURNING `+userColumns,
-		email, name, passwordHash, emailVerified))
+		`INSERT INTO users (email, name, password_hash, email_verified, locale)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING `+userColumns,
+		email, name, passwordHash, emailVerified, locale))
 	if isUniqueViolation(err) {
 		return User{}, ErrConflict
 	}
@@ -52,7 +56,7 @@ func GetUserByEmailForUpdate(ctx context.Context, db DB, email string) (User, er
 
 func GetUserByIdentity(ctx context.Context, db DB, provider, subject string) (User, error) {
 	return scanUser(db.QueryRow(ctx,
-		`SELECT u.id, u.email, u.email_verified, u.name, u.password_hash, u.created_at
+		`SELECT u.id, u.email, u.email_verified, u.name, u.password_hash, u.locale, u.created_at
 		 FROM user_identities i JOIN users u ON u.id = i.user_id
 		 WHERE i.provider = $1 AND i.subject = $2`, provider, subject))
 }
@@ -80,8 +84,10 @@ func MarkEmailVerified(ctx context.Context, db DB, userID uuid.UUID, dropPasswor
 	return err
 }
 
-func UpdateUserName(ctx context.Context, db DB, userID uuid.UUID, name string) (User, error) {
+// UpdateUser changes the name and/or locale; nil leaves a field as it is.
+func UpdateUser(ctx context.Context, db DB, userID uuid.UUID, name, locale *string) (User, error) {
 	return scanUser(db.QueryRow(ctx,
-		`UPDATE users SET name = $2, updated_at = now() WHERE id = $1 RETURNING `+userColumns,
-		userID, name))
+		`UPDATE users SET name = coalesce($2, name), locale = coalesce($3, locale), updated_at = now()
+		 WHERE id = $1 RETURNING `+userColumns,
+		userID, name, locale))
 }

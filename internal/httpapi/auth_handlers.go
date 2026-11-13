@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,8 +46,10 @@ func (a *api) issueSession(ctx context.Context, db store.DB, user store.User, fa
 }
 
 // createUserWithPersonalWorkspace is the single place new users are born.
-func createUserWithPersonalWorkspace(ctx context.Context, db store.DB, email, name string, passwordHash *string, verified bool, currency string) (store.User, error) {
-	user, err := store.CreateUser(ctx, db, email, name, passwordHash, verified)
+// locale is the user's language ("es" or "en"); the workspace's default
+// categories are created in it.
+func createUserWithPersonalWorkspace(ctx context.Context, db store.DB, email, name string, passwordHash *string, verified bool, currency, locale string) (store.User, error) {
+	user, err := store.CreateUser(ctx, db, email, name, passwordHash, verified, locale)
 	if err != nil {
 		return store.User{}, err
 	}
@@ -59,7 +62,7 @@ func createUserWithPersonalWorkspace(ctx context.Context, db store.DB, email, na
 func validatePassword(pw string) error {
 	n := len([]rune(pw))
 	if n < auth.MinPasswordLength || n > auth.MaxPasswordLength {
-		return badRequest("password must be %d to %d characters", auth.MinPasswordLength, auth.MaxPasswordLength)
+		return badRequestCode("invalid_password", "password must be %d to %d characters", auth.MinPasswordLength, auth.MaxPasswordLength)
 	}
 	return nil
 }
@@ -111,7 +114,7 @@ func (a *api) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	var session sessionDTO
 	err = store.InTx(r.Context(), a.pool, func(tx pgx.Tx) error {
-		user, err := createUserWithPersonalWorkspace(r.Context(), tx, req.Email, req.Name, &hash, false, req.BaseCurrency)
+		user, err := createUserWithPersonalWorkspace(r.Context(), tx, req.Email, req.Name, &hash, false, req.BaseCurrency, requestLocale(r))
 		if err != nil {
 			return err
 		}
@@ -239,7 +242,7 @@ func (a *api) handleGoogle(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 			case errors.Is(err, store.ErrNotFound):
-				user, err = createUserWithPersonalWorkspace(ctx, tx, email, identity.Name, nil, true, defaultBaseCurrency)
+				user, err = createUserWithPersonalWorkspace(ctx, tx, email, identity.Name, nil, true, defaultBaseCurrency, requestLocale(r))
 				if err != nil {
 					return err
 				}
@@ -361,21 +364,43 @@ func (a *api) handleGetMe(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /v1/users/me
+// Changes name and/or locale ("es" or "en"); a field left out stays as it is.
 func (a *api) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name   *string `json:"name"`
+		Locale *string `json:"locale"`
 	}
 	err := decodeJSON(w, r, &req)
-	if err == nil {
-		req.Name, err = cleanName(req.Name, "name", true, 100)
+	if err == nil && req.Name == nil && req.Locale == nil {
+		err = badRequest("name or locale is required")
+	}
+	if err == nil && req.Name != nil {
+		var name string
+		name, err = cleanName(*req.Name, "name", true, 100)
+		req.Name = &name
+	}
+	if err == nil && req.Locale != nil && !store.ValidLocale(*req.Locale) {
+		err = badRequest("locale must be es or en")
 	}
 	if writeBadRequest(w, err) {
 		return
 	}
-	user, err := store.UpdateUserName(r.Context(), a.pool, userIDFrom(r.Context()), req.Name)
+	user, err := store.UpdateUser(r.Context(), a.pool, userIDFrom(r.Context()), req.Name, req.Locale)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toUserDTO(user))
+}
+
+// requestLocale picks "en" when English is the first language in
+// Accept-Language and "es" otherwise. The app sends its active language.
+func requestLocale(r *http.Request) string {
+	first, _, _ := strings.Cut(r.Header.Get("Accept-Language"), ",")
+	first, _, _ = strings.Cut(first, ";")
+	lang, _, _ := strings.Cut(strings.TrimSpace(strings.ToLower(first)), "-")
+	if lang == "en" {
+		return "en"
+	}
+	return "es"
 }

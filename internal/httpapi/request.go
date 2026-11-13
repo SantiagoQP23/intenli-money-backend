@@ -15,13 +15,19 @@ import (
 
 const maxBodyBytes = 1 << 20
 
-// errBadRequest carries a client-facing message for a 400 response.
-type errBadRequest struct{ msg string }
+// errBadRequest carries a client-facing message for a 400 response. Code is
+// "invalid_request" unless set: errors users can cause from a form get their
+// own code so the app can show a translated message.
+type errBadRequest struct{ code, msg string }
 
 func (e errBadRequest) Error() string { return e.msg }
 
 func badRequest(format string, args ...any) error {
 	return errBadRequest{msg: fmt.Sprintf(format, args...)}
+}
+
+func badRequestCode(code, format string, args ...any) error {
+	return errBadRequest{code: code, msg: fmt.Sprintf(format, args...)}
 }
 
 // decodeJSON reads a single JSON object into dst, rejecting unknown fields.
@@ -50,7 +56,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 func writeBadRequest(w http.ResponseWriter, err error) bool {
 	var br errBadRequest
 	if errors.As(err, &br) {
-		writeError(w, http.StatusBadRequest, "invalid_request", br.msg)
+		code := br.code
+		if code == "" {
+			code = "invalid_request"
+		}
+		writeError(w, http.StatusBadRequest, code, br.msg)
 		return true
 	}
 	return false
@@ -60,7 +70,7 @@ func normalizeEmail(raw string) (string, error) {
 	email := strings.ToLower(strings.TrimSpace(raw))
 	addr, err := mail.ParseAddress(email)
 	if err != nil || addr.Address != email || len(email) > 254 {
-		return "", badRequest("email is not valid")
+		return "", badRequestCode("invalid_email", "email is not valid")
 	}
 	return email, nil
 }
