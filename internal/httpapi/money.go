@@ -72,6 +72,19 @@ func parseDate(field, raw string) (time.Time, error) {
 	return t, nil
 }
 
+// parseTimeOfDay accepts an optional "15:04" time of day; nil or "" means none.
+func parseTimeOfDay(field string, raw *string) (*string, error) {
+	if raw == nil || *raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("15:04", *raw)
+	if err != nil {
+		return nil, badRequest("%s must be a time like 14:30", field)
+	}
+	s := t.Format("15:04")
+	return &s, nil
+}
+
 func formatAmount(d decimal.Decimal, precision int32) string {
 	return d.StringFixed(precision)
 }
