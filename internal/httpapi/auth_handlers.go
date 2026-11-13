@@ -99,6 +99,10 @@ func (a *api) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.currencySupported(w, r, req.BaseCurrency) {
+		return
+	}
+
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		a.internalError(w, r, err)
