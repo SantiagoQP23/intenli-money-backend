@@ -225,3 +225,10 @@ func TestObligationValidation(t *testing.T) {
 	other, _ := ta.setupWorkspace("stranger@example.com")
 	ta.expect(ta.do("GET", ws+"/obligations/"+ob.str("id"), other.access, nil), http.StatusNotFound)
 }
+
+func TestCurrenciesArePublic(t *testing.T) {
+	ta := newTestAPI(t, nil)
+	if n := len(ta.expect(ta.do("GET", "/v1/currencies", "", nil), http.StatusOK).list()); n < 10 {
+		t.Fatalf("currencies: %d", n)
+	}
+}

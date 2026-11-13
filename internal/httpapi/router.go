@@ -97,6 +97,9 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/logout", a.handleLogout)
 		})
 
+		// Public so sign-up can offer a base currency picker.
+		r.Get("/currencies", a.handleListCurrencies)
+
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireAuth)
 
@@ -104,7 +107,6 @@ func NewRouter(d Deps) http.Handler {
 			r.Patch("/users/me", a.handleUpdateMe)
 
 			r.Post("/invitations/accept", a.handleAcceptInvitation)
-			r.Get("/currencies", a.handleListCurrencies)
 
 			r.Get("/workspaces", a.handleListWorkspaces)
 			r.Post("/workspaces", a.handleCreateWorkspace)

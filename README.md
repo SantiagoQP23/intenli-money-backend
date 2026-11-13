@@ -70,7 +70,7 @@ Financial data (every member reads; editors and owners write):
 
 | Route | What |
 | --- | --- |
-| `GET /v1/currencies` | Supported currencies with their decimal places |
+| `GET /v1/currencies` | Supported currencies with their decimal places (no sign-in needed) |
 | `GET`, `POST /v1/workspaces/{id}/accounts` | `{name, type: CASH\|BANK\|SAVINGS\|WALLET\|CREDIT_CARD, currency?, opening_balance?}`. Each account includes its `balance` |
 | `GET`, `PATCH /v1/workspaces/{id}/accounts/{accountID}` | `{name?, type?, opening_balance?, archived?}`. Currency is fixed |
 | `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name}`. New workspaces start with defaults |
