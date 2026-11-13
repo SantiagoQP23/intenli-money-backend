@@ -74,7 +74,8 @@ Financial data (every member reads; editors and owners write):
 | `GET`, `POST /v1/workspaces/{id}/accounts` | `{name, type: CASH\|BANK\|SAVINGS\|WALLET\|CREDIT_CARD, currency?, opening_balance?}`. Each account includes its `balance` |
 | `GET`, `PATCH /v1/workspaces/{id}/accounts/{accountID}` | `{name?, type?, opening_balance?, archived?}`. Currency is fixed |
 | `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name}`. New workspaces start with defaults |
-| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename / archive |
+| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename `{name}` / archive (past transactions keep it) |
+| `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive. `409 category_exists` if an active one has the name |
 | `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
 | `GET /v1/workspaces/{id}/transactions` | Newest first. Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
 | `POST /v1/workspaces/{id}/transactions` | See below |

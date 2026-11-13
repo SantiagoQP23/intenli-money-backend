@@ -321,6 +321,27 @@ func (a *api) handleArchiveCategory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// POST /v1/workspaces/{workspaceID}/categories/{categoryID}/restore (editor)
+// un-archives it.
+func (a *api) handleRestoreCategory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := uuidParam(r, "categoryID")
+	if !ok {
+		writeError(w, http.StatusNotFound, "category_not_found", "category not found")
+		return
+	}
+	switch err := store.RestoreCategory(ctx, a.pool, membershipFrom(ctx).ID, id); {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "category_not_found", "archived category not found")
+	case errors.Is(err, store.ErrConflict):
+		writeError(w, http.StatusConflict, "category_exists", "an active category with this name already exists")
+	case err != nil:
+		a.internalError(w, r, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // ---- Exchange rates ----
 
 type rateDTO struct {
