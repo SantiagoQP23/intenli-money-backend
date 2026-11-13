@@ -99,6 +99,7 @@ func NewRouter(d Deps) http.Handler {
 
 		// Public so sign-up can offer a base currency picker.
 		r.Get("/currencies", a.handleListCurrencies)
+		r.Get("/category-icons", a.handleListCategoryIcons)
 
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireAuth)

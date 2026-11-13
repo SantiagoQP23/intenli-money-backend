@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
+	"github.com/SantiagoQP23/intenli-money-backend/internal/defaults"
 )
 
 type Currency struct {
@@ -52,33 +54,16 @@ type Category struct {
 	ID         uuid.UUID
 	Kind       CategoryKind
 	Name       string
+	Icon       *string
 	ArchivedAt *time.Time
 }
 
-var defaultCategories = []struct {
-	kind CategoryKind
-	name string
-}{
-	{CategoryIncome, "Salario"},
-	{CategoryIncome, "Ventas"},
-	{CategoryIncome, "Otros ingresos"},
-	{CategoryExpense, "Comida"},
-	{CategoryExpense, "Transporte"},
-	{CategoryExpense, "Vivienda"},
-	{CategoryExpense, "Servicios"},
-	{CategoryExpense, "Salud"},
-	{CategoryExpense, "Compras"},
-	{CategoryExpense, "Entretenimiento"},
-	{CategoryExpense, "Proveedores"},
-	{CategoryExpense, "Otros gastos"},
-}
-
-// CreateDefaultCategories seeds a new workspace with common categories.
-func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID) error {
-	for _, c := range defaultCategories {
+// CreateDefaultCategories seeds a new workspace with the defaults for its type.
+func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID, typ WorkspaceType) error {
+	for _, c := range defaults.For(string(typ)) {
 		if _, err := db.Exec(ctx,
-			`INSERT INTO categories (workspace_id, kind, name) VALUES ($1, $2, $3)`,
-			workspaceID, c.kind, c.name); err != nil {
+			`INSERT INTO categories (workspace_id, kind, name, icon) VALUES ($1, $2, $3, $4)`,
+			workspaceID, c.Kind, c.Name, c.Icon); err != nil {
 			return err
 		}
 	}
@@ -87,7 +72,7 @@ func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID) 
 
 func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeArchived bool) ([]Category, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, kind, name, archived_at FROM categories
+		`SELECT id, kind, name, icon, archived_at FROM categories
 		 WHERE workspace_id = $1 AND ($2 OR archived_at IS NULL)
 		 ORDER BY kind, lower(name)`, workspaceID, includeArchived)
 	if err != nil {
@@ -97,7 +82,7 @@ func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeAr
 	out := []Category{}
 	for rows.Next() {
 		var c Category
-		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.ArchivedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.Icon, &c.ArchivedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -108,28 +93,32 @@ func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeAr
 func GetCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) (Category, error) {
 	var c Category
 	err := db.QueryRow(ctx,
-		`SELECT id, kind, name, archived_at FROM categories WHERE workspace_id = $1 AND id = $2`,
-		workspaceID, id).Scan(&c.ID, &c.Kind, &c.Name, &c.ArchivedAt)
+		`SELECT id, kind, name, icon, archived_at FROM categories WHERE workspace_id = $1 AND id = $2`,
+		workspaceID, id).Scan(&c.ID, &c.Kind, &c.Name, &c.Icon, &c.ArchivedAt)
 	return c, notFound(err)
 }
 
 // CreateCategory returns ErrConflict when an active category of that kind
 // already has the name.
-func CreateCategory(ctx context.Context, db DB, workspaceID uuid.UUID, kind CategoryKind, name string) (Category, error) {
-	c := Category{Kind: kind, Name: name}
+func CreateCategory(ctx context.Context, db DB, workspaceID uuid.UUID, kind CategoryKind, name string, icon *string) (Category, error) {
+	c := Category{Kind: kind, Name: name, Icon: icon}
 	err := db.QueryRow(ctx,
-		`INSERT INTO categories (workspace_id, kind, name) VALUES ($1, $2, $3) RETURNING id`,
-		workspaceID, kind, name).Scan(&c.ID)
+		`INSERT INTO categories (workspace_id, kind, name, icon) VALUES ($1, $2, $3, $4) RETURNING id`,
+		workspaceID, kind, name, icon).Scan(&c.ID)
 	if isUniqueViolation(err) {
 		return Category{}, ErrConflict
 	}
 	return c, err
 }
 
-func RenameCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID, name string) error {
+// UpdateCategory renames an active category and, when icon isn't nil, sets
+// its icon ("" clears it).
+func UpdateCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID, name string, icon *string) error {
 	tag, err := db.Exec(ctx,
-		`UPDATE categories SET name = $3 WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL`,
-		workspaceID, id, name)
+		`UPDATE categories SET name = $3,
+		   icon = CASE WHEN $4::text IS NULL THEN icon ELSE NULLIF($4, '') END
+		 WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL`,
+		workspaceID, id, name, icon)
 	if isUniqueViolation(err) {
 		return ErrConflict
 	}

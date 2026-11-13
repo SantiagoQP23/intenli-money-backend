@@ -28,7 +28,13 @@ func Up(ctx context.Context, databaseURL string) error {
 	if err != nil {
 		return fmt.Errorf("init migration lock: %w", err)
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithSessionLocker(locker))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files,
+		goose.WithSessionLocker(locker),
+		goose.WithGoMigrations(goose.NewGoMigration(6,
+			// Runs once: later changes to the defaults only affect new workspaces.
+			&goose.GoFunc{RunTx: BackfillDefaultCategories},
+			&goose.GoFunc{Mode: goose.TransactionEnabled}, // nothing to undo: rows may be in use
+		)))
 	if err != nil {
 		return fmt.Errorf("init migrations: %w", err)
 	}

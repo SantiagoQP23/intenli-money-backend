@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/SantiagoQP23/intenli-money-backend/internal/defaults"
 	"github.com/SantiagoQP23/intenli-money-backend/internal/store"
 )
 
@@ -222,11 +223,25 @@ type categoryDTO struct {
 	ID       uuid.UUID          `json:"id"`
 	Kind     store.CategoryKind `json:"kind"`
 	Name     string             `json:"name"`
+	Icon     *string            `json:"icon"`
 	Archived bool               `json:"archived"`
 }
 
 func toCategoryDTO(c store.Category) categoryDTO {
-	return categoryDTO{ID: c.ID, Kind: c.Kind, Name: c.Name, Archived: c.ArchivedAt != nil}
+	return categoryDTO{ID: c.ID, Kind: c.Kind, Name: c.Name, Icon: c.Icon, Archived: c.ArchivedAt != nil}
+}
+
+// checkIcon accepts a nil or known icon; "" is allowed when clearing is.
+func checkIcon(icon *string, allowEmpty bool) error {
+	if icon == nil || (allowEmpty && *icon == "") || defaults.ValidIcon(*icon) {
+		return nil
+	}
+	return badRequest("icon is not one of the supported icons")
+}
+
+// GET /v1/category-icons: the icons a category may use, in picker order.
+func (a *api) handleListCategoryIcons(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, listDTO[string]{Data: defaults.Icons})
 }
 
 // GET /v1/workspaces/{workspaceID}/categories[?include_archived=true]
@@ -250,10 +265,14 @@ func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Kind store.CategoryKind `json:"kind"`
 		Name string             `json:"name"`
+		Icon *string            `json:"icon"`
 	}
 	err := decodeJSON(w, r, &req)
 	if err == nil && req.Kind != store.CategoryIncome && req.Kind != store.CategoryExpense {
 		err = badRequest("kind must be INCOME or EXPENSE")
+	}
+	if err == nil {
+		err = checkIcon(req.Icon, false)
 	}
 	if err == nil {
 		req.Name, err = cleanName(req.Name, "name", true, 60)
@@ -261,7 +280,7 @@ func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	if writeBadRequest(w, err) {
 		return
 	}
-	c, err := store.CreateCategory(ctx, a.pool, membershipFrom(ctx).ID, req.Kind, req.Name)
+	c, err := store.CreateCategory(ctx, a.pool, membershipFrom(ctx).ID, req.Kind, req.Name, req.Icon)
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "category_exists", "a category with this name already exists")
 		return
@@ -274,6 +293,7 @@ func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /v1/workspaces/{workspaceID}/categories/{categoryID} (editor)
+// {name, icon?}
 func (a *api) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, ok := uuidParam(r, "categoryID")
@@ -282,16 +302,20 @@ func (a *api) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Name string  `json:"name"`
+		Icon *string `json:"icon"` // omit to keep, "" to clear
 	}
 	err := decodeJSON(w, r, &req)
 	if err == nil {
 		req.Name, err = cleanName(req.Name, "name", true, 60)
 	}
+	if err == nil {
+		err = checkIcon(req.Icon, true)
+	}
 	if writeBadRequest(w, err) {
 		return
 	}
-	switch err := store.RenameCategory(ctx, a.pool, membershipFrom(ctx).ID, id, req.Name); {
+	switch err := store.UpdateCategory(ctx, a.pool, membershipFrom(ctx).ID, id, req.Name, req.Icon); {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "category_not_found", "category not found")
 	case errors.Is(err, store.ErrConflict):

@@ -83,7 +83,7 @@ func CreateWorkspace(ctx context.Context, db DB, name string, typ WorkspaceType,
 	if err := AddMember(ctx, db, m.ID, creator, RoleOwner); err != nil {
 		return Membership{}, err
 	}
-	if err := CreateDefaultCategories(ctx, db, m.ID); err != nil {
+	if err := CreateDefaultCategories(ctx, db, m.ID, typ); err != nil {
 		return Membership{}, err
 	}
 	m.Role = RoleOwner
