@@ -169,8 +169,8 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 			toRate = decimal.NewFromInt(1)
 		}
 		t.Entries = []store.Entry{
-			{AccountID: from.ID, Amount: amount.Neg(), Currency: from.Currency, ExchangeRate: fromRate, BaseAmount: baseValue.Neg()},
-			{AccountID: to.ID, Amount: toAmount, Currency: to.Currency, ExchangeRate: toRate, BaseAmount: baseValue},
+			{AccountID: &from.ID, Amount: amount.Neg(), Currency: from.Currency, ExchangeRate: fromRate, BaseAmount: baseValue.Neg()},
+			{AccountID: &to.ID, Amount: toAmount, Currency: to.Currency, ExchangeRate: toRate, BaseAmount: baseValue},
 		}
 		return t, nil
 	}
@@ -186,25 +186,12 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 	if err != nil {
 		return t, err
 	}
-	if req.CategoryID != nil {
-		cat, err := store.GetCategory(ctx, b.db, b.m.ID, *req.CategoryID)
-		if errors.Is(err, store.ErrNotFound) {
-			return t, txError{http.StatusBadRequest, "category_not_found", "category_id is not a category in this workspace"}
-		}
-		if err != nil {
-			return t, err
-		}
-		wantKind := store.CategoryExpense
-		if req.Type == store.TxIncome {
-			wantKind = store.CategoryIncome
-		}
-		if cat.Kind != wantKind {
-			return t, txError{http.StatusBadRequest, "category_kind_mismatch", "category kind does not match the transaction type"}
-		}
-		if cat.ArchivedAt != nil && (b.keepCatID == nil || *b.keepCatID != cat.ID) {
-			return t, txError{http.StatusConflict, "category_archived", "category is archived"}
-		}
-		t.CategoryID = &cat.ID
+	wantKind := store.CategoryExpense
+	if req.Type == store.TxIncome {
+		wantKind = store.CategoryIncome
+	}
+	if t.CategoryID, err = b.category(ctx, req.CategoryID, wantKind); err != nil {
+		return t, err
 	}
 	rate, err := b.rate(ctx, acc.Currency, req.ExchangeRate)
 	if err != nil {
@@ -215,13 +202,34 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 		signed = amount.Neg()
 	}
 	t.Entries = []store.Entry{{
-		AccountID:    acc.ID,
+		AccountID:    &acc.ID,
 		Amount:       signed,
 		Currency:     acc.Currency,
 		ExchangeRate: rate,
 		BaseAmount:   signed.Mul(rate).Round(base.Precision),
 	}}
 	return t, nil
+}
+
+// category checks an optional category id against the workspace and kind.
+func (b *txBuilder) category(ctx context.Context, id *uuid.UUID, kind store.CategoryKind) (*uuid.UUID, error) {
+	if id == nil {
+		return nil, nil
+	}
+	cat, err := store.GetCategory(ctx, b.db, b.m.ID, *id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, txError{http.StatusBadRequest, "category_not_found", "category_id is not a category in this workspace"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cat.Kind != kind {
+		return nil, txError{http.StatusBadRequest, "category_kind_mismatch", "category kind does not match the transaction type"}
+	}
+	if cat.ArchivedAt != nil && (b.keepCatID == nil || *b.keepCatID != cat.ID) {
+		return nil, txError{http.StatusConflict, "category_archived", "category is archived"}
+	}
+	return &cat.ID, nil
 }
 
 func (b *txBuilder) saveRates(ctx context.Context, db store.DB) error {
@@ -249,11 +257,12 @@ func (a *api) writeTxError(w http.ResponseWriter, r *http.Request, err error) {
 // ---- DTOs ----
 
 type entryDTO struct {
-	AccountID    uuid.UUID `json:"account_id"`
-	Amount       string    `json:"amount"`
-	Currency     string    `json:"currency"`
-	ExchangeRate string    `json:"exchange_rate"`
-	BaseAmount   string    `json:"base_amount"`
+	AccountID    *uuid.UUID `json:"account_id"`
+	ObligationID *uuid.UUID `json:"obligation_id"`
+	Amount       string     `json:"amount"`
+	Currency     string     `json:"currency"`
+	ExchangeRate string     `json:"exchange_rate"`
+	BaseAmount   string     `json:"base_amount"`
 }
 
 type transactionDTO struct {
@@ -268,9 +277,11 @@ type transactionDTO struct {
 	Currency   string     `json:"currency"`
 	BaseAmount string     `json:"base_amount"`
 	Entries    []entryDTO `json:"entries"`
-	CreatedBy  uuid.UUID  `json:"created_by"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	// ObligationID is set when an obligation manages this transaction.
+	ObligationID *uuid.UUID `json:"obligation_id"`
+	CreatedBy    uuid.UUID  `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base string) transactionDTO {
@@ -284,6 +295,7 @@ func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base 
 		p := curs[e.Currency].Precision
 		dto.Entries[i] = entryDTO{
 			AccountID:    e.AccountID,
+			ObligationID: e.ObligationID,
 			Amount:       formatAmount(e.Amount, p),
 			Currency:     e.Currency,
 			ExchangeRate: e.ExchangeRate.String(),
@@ -291,10 +303,25 @@ func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base 
 		}
 	}
 	if len(t.Entries) > 0 {
-		main := t.Entries[0] // the only entry, or the outflow of a transfer
-		dto.Amount = formatAmount(main.Amount.Abs(), curs[main.Currency].Precision)
+		// Income and expense count every entry (a purchase on credit is part
+		// cash, part payable). Other types show the first account movement.
+		main := t.Entries[0]
+		amount, baseAmount := main.Amount, main.BaseAmount
+		if t.Type == store.TxIncome || t.Type == store.TxExpense {
+			amount, baseAmount = decimal.Zero, decimal.Zero
+			for _, e := range t.Entries {
+				amount = amount.Add(e.Amount)
+				baseAmount = baseAmount.Add(e.BaseAmount)
+			}
+		}
+		dto.Amount = formatAmount(amount.Abs(), curs[main.Currency].Precision)
 		dto.Currency = main.Currency
-		dto.BaseAmount = formatAmount(main.BaseAmount.Abs(), basePrec)
+		dto.BaseAmount = formatAmount(baseAmount.Abs(), basePrec)
+		for _, e := range t.Entries {
+			if e.ObligationID != nil {
+				dto.ObligationID = e.ObligationID
+			}
+		}
 	}
 	return dto
 }
@@ -338,8 +365,8 @@ func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	f.To = parseDay("to")
 	if v := q.Get("type"); v != "" && err == nil {
 		t := store.TxType(v)
-		if !t.Valid() {
-			err = badRequest("type must be INCOME, EXPENSE or TRANSFER")
+		if !t.Known() {
+			err = badRequest("type must be INCOME, EXPENSE, TRANSFER, SETTLEMENT or LOAN")
 		}
 		f.Type = &t
 	}
@@ -491,6 +518,9 @@ func (a *api) handleReplaceTransaction(w http.ResponseWriter, r *http.Request) {
 		if err := store.LockTransaction(ctx, tx, m.ID, id); err != nil {
 			return err
 		}
+		if err := guardManaged(ctx, tx, m.ID, id); err != nil {
+			return err
+		}
 		current, err := store.GetTransaction(ctx, tx, m.ID, id)
 		if err != nil {
 			return err
@@ -520,9 +550,33 @@ func (a *api) handleDeleteTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "transaction_not_found", "transaction not found")
 		return
 	}
-	if err := store.SoftDeleteTransaction(ctx, a.pool, membershipFrom(ctx).ID, id); err != nil {
+	err := store.InTx(ctx, a.pool, func(tx pgx.Tx) error {
+		wsID := membershipFrom(ctx).ID
+		if err := store.LockTransaction(ctx, tx, wsID, id); err != nil {
+			return err
+		}
+		if err := guardManaged(ctx, tx, wsID, id); err != nil {
+			return err
+		}
+		return store.SoftDeleteTransaction(ctx, tx, wsID, id)
+	})
+	if err != nil {
 		a.writeTxError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+var errManagedByObligation = txError{http.StatusConflict, "managed_by_obligation",
+	"this transaction belongs to a debt; change it from the debt or its payments"}
+
+func guardManaged(ctx context.Context, db store.DB, workspaceID, id uuid.UUID) error {
+	managed, err := store.TransactionManagedByObligation(ctx, db, workspaceID, id)
+	if err != nil {
+		return err
+	}
+	if managed {
+		return errManagedByObligation
+	}
+	return nil
 }

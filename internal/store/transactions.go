@@ -13,17 +13,26 @@ import (
 type TxType string
 
 const (
-	TxIncome   TxType = "INCOME"
-	TxExpense  TxType = "EXPENSE"
-	TxTransfer TxType = "TRANSFER"
+	TxIncome     TxType = "INCOME"
+	TxExpense    TxType = "EXPENSE"
+	TxTransfer   TxType = "TRANSFER"
+	TxSettlement TxType = "SETTLEMENT" // paying or collecting an obligation
+	TxLoan       TxType = "LOAN"       // borrowing or lending money
 )
 
+// Valid reports whether t is a type a client may create directly.
+// SETTLEMENT and LOAN are created through obligations.
 func (t TxType) Valid() bool { return t == TxIncome || t == TxExpense || t == TxTransfer }
 
-// Entry is one account movement. Amount is signed: positive money in,
-// negative money out, in the account's currency.
+// Known reports whether t is any stored type (for list filters).
+func (t TxType) Known() bool { return t.Valid() || t == TxSettlement || t == TxLoan }
+
+// Entry is one account movement (AccountID) or one change to an obligation
+// (ObligationID); exactly one is set. Amount is signed in Currency: money
+// in / receivable up is positive, money out / payable up is negative.
 type Entry struct {
-	AccountID    uuid.UUID
+	AccountID    *uuid.UUID
+	ObligationID *uuid.UUID
 	Amount       decimal.Decimal
 	Currency     string
 	ExchangeRate decimal.Decimal // 1 Currency = ExchangeRate base currency
@@ -45,9 +54,9 @@ type Transaction struct {
 func insertEntries(ctx context.Context, db DB, workspaceID, txID uuid.UUID, entries []Entry) error {
 	for _, e := range entries {
 		if _, err := db.Exec(ctx,
-			`INSERT INTO transaction_entries (workspace_id, transaction_id, account_id, amount, currency, exchange_rate, base_amount)
-			 VALUES ($1, $2, $3, $4::numeric, $5, $6::numeric, $7::numeric)`,
-			workspaceID, txID, e.AccountID, e.Amount.String(), e.Currency, e.ExchangeRate.String(), e.BaseAmount.String()); err != nil {
+			`INSERT INTO transaction_entries (workspace_id, transaction_id, account_id, obligation_id, amount, currency, exchange_rate, base_amount)
+			 VALUES ($1, $2, $3, $4, $5::numeric, $6, $7::numeric, $8::numeric)`,
+			workspaceID, txID, e.AccountID, e.ObligationID, e.Amount.String(), e.Currency, e.ExchangeRate.String(), e.BaseAmount.String()); err != nil {
 			return err
 		}
 	}
@@ -196,9 +205,9 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		ids[i] = t.ID
 	}
 	erows, err := db.Query(ctx,
-		`SELECT transaction_id, account_id, amount::text, currency, exchange_rate::text, base_amount::text
+		`SELECT transaction_id, account_id, obligation_id, amount::text, currency, exchange_rate::text, base_amount::text
 		 FROM transaction_entries WHERE transaction_id = ANY($1)
-		 ORDER BY transaction_id, amount`, ids) // negative (outflow) first
+		 ORDER BY transaction_id, account_id IS NULL, amount`, ids) // account entries first, outflow first
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +216,7 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		var txID uuid.UUID
 		var e Entry
 		var amount, rate, base string
-		if err := erows.Scan(&txID, &e.AccountID, &amount, &e.Currency, &rate, &base); err != nil {
+		if err := erows.Scan(&txID, &e.AccountID, &e.ObligationID, &amount, &e.Currency, &rate, &base); err != nil {
 			return nil, err
 		}
 		e.Amount = decimal.RequireFromString(amount)
@@ -217,4 +226,16 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		txs[i].Entries = append(txs[i].Entries, e)
 	}
 	return txs, erows.Err()
+}
+
+// TransactionManagedByObligation reports whether the transaction was created
+// by an obligation (origin or payment) and must be changed through it.
+func TransactionManagedByObligation(ctx context.Context, db DB, workspaceID, id uuid.UUID) (bool, error) {
+	var managed bool
+	err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM transaction_entries WHERE transaction_id = $2 AND workspace_id = $1 AND obligation_id IS NOT NULL)
+		     OR EXISTS (SELECT 1 FROM obligation_payments WHERE transaction_id = $2 AND workspace_id = $1)
+		     OR EXISTS (SELECT 1 FROM transactions WHERE id = $2 AND workspace_id = $1 AND type IN ('SETTLEMENT', 'LOAN'))`,
+		workspaceID, id).Scan(&managed)
+	return managed, err
 }
