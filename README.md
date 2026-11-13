@@ -82,7 +82,7 @@ Financial data (every member reads; editors and owners write):
 | `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename `{name, icon?}` (`""` clears the icon) / archive (past transactions keep it) |
 | `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive. `409 category_exists` if an active one has the name |
 | `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
-| `GET /v1/workspaces/{id}/transactions` | Newest first. Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
 | `POST /v1/workspaces/{id}/transactions` | See below |
 | `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
 | `GET`, `POST /v1/workspaces/{id}/contacts`, `PUT …/contacts/{contactID}` | Suppliers, customers, lenders: `{name, notes?, archived?}` |
@@ -99,12 +99,14 @@ Transaction bodies:
 
 ```jsonc
 // INCOME or EXPENSE
-{"type": "EXPENSE", "occurred_on": "2026-11-13", "account_id": "…", "amount": "12.50",
+{"type": "EXPENSE", "occurred_on": "2026-11-13", "occurred_time": "13:45", "account_id": "…", "amount": "12.50",
  "category_id": "…", "description": "Almuerzo", "exchange_rate": "1.08"}
 // TRANSFER (to_amount only when the currencies differ)
 {"type": "TRANSFER", "occurred_on": "2026-11-13", "from_account_id": "…", "to_account_id": "…",
  "amount": "54.00", "to_amount": "50.00"}
 ```
+
+`occurred_time` is the optional local time of day (`"HH:MM"`); `null` or left out means no time. Reports group by `occurred_on` only.
 
 Debt bodies (`contact_name` reuses or creates a contact; `due_on` is optional):
 

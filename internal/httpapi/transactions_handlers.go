@@ -29,6 +29,7 @@ import (
 type txRequest struct {
 	Type          store.TxType `json:"type"`
 	OccurredOn    string       `json:"occurred_on"`
+	OccurredTime  *string      `json:"occurred_time"` // "15:04", optional
 	Description   string       `json:"description"`
 	CategoryID    *uuid.UUID   `json:"category_id"`
 	AccountID     *uuid.UUID   `json:"account_id"`
@@ -112,12 +113,16 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 		return store.Transaction{}, err
 	}
 	b.day = day
+	tod, err := parseTimeOfDay("occurred_time", req.OccurredTime)
+	if err != nil {
+		return store.Transaction{}, err
+	}
 	desc, err := cleanName(req.Description, "description", false, 200)
 	if err != nil {
 		return store.Transaction{}, err
 	}
 	base := b.curs[b.m.BaseCurrency]
-	t := store.Transaction{Type: req.Type, OccurredOn: day, Description: desc}
+	t := store.Transaction{Type: req.Type, OccurredOn: day, OccurredTime: tod, Description: desc}
 
 	if req.Type == store.TxTransfer {
 		if req.AccountID != nil || req.CategoryID != nil {
@@ -266,11 +271,13 @@ type entryDTO struct {
 }
 
 type transactionDTO struct {
-	ID          uuid.UUID    `json:"id"`
-	Type        store.TxType `json:"type"`
-	OccurredOn  string       `json:"occurred_on"`
-	Description string       `json:"description"`
-	CategoryID  *uuid.UUID   `json:"category_id"`
+	ID         uuid.UUID    `json:"id"`
+	Type       store.TxType `json:"type"`
+	OccurredOn string       `json:"occurred_on"`
+	// OccurredTime is the local time of day ("15:04"), or null when unknown.
+	OccurredTime *string    `json:"occurred_time"`
+	Description  string     `json:"description"`
+	CategoryID   *uuid.UUID `json:"category_id"`
 	// Amount is the positive amount in the (from) account's currency, and
 	// BaseAmount the same in the workspace base currency.
 	Amount     string     `json:"amount"`
@@ -286,8 +293,9 @@ type transactionDTO struct {
 
 func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base string) transactionDTO {
 	dto := transactionDTO{
-		ID: t.ID, Type: t.Type, OccurredOn: t.OccurredOn.Format(time.DateOnly), Description: t.Description,
-		CategoryID: t.CategoryID, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		ID: t.ID, Type: t.Type, OccurredOn: t.OccurredOn.Format(time.DateOnly), OccurredTime: t.OccurredTime,
+		Description: t.Description,
+		CategoryID:  t.CategoryID, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 		Entries: make([]entryDTO, len(t.Entries)),
 	}
 	basePrec := curs[base].Precision
@@ -400,7 +408,11 @@ func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	if len(txs) > limit {
 		txs = txs[:limit]
 		last := txs[limit-1]
-		c := encodeCursor(store.TxCursor{OccurredOn: last.OccurredOn, CreatedAt: last.CreatedAt, ID: last.ID})
+		sortTime := "00:00"
+		if last.OccurredTime != nil {
+			sortTime = *last.OccurredTime
+		}
+		c := encodeCursor(store.TxCursor{OccurredOn: last.OccurredOn, SortTime: sortTime, CreatedAt: last.CreatedAt, ID: last.ID})
 		next = &c
 	}
 	out := make([]transactionDTO, len(txs))
@@ -415,12 +427,13 @@ func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 
 type cursorJSON struct {
 	D string    `json:"d"`
+	T string    `json:"t,omitempty"`
 	C time.Time `json:"c"`
 	I uuid.UUID `json:"i"`
 }
 
 func encodeCursor(c store.TxCursor) string {
-	b, _ := json.Marshal(cursorJSON{D: c.OccurredOn.Format(time.DateOnly), C: c.CreatedAt, I: c.ID})
+	b, _ := json.Marshal(cursorJSON{D: c.OccurredOn.Format(time.DateOnly), T: c.SortTime, C: c.CreatedAt, I: c.ID})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -431,10 +444,14 @@ func decodeCursor(s string) (*store.TxCursor, error) {
 		err = json.Unmarshal(b, &cj)
 	}
 	day, derr := time.Parse(time.DateOnly, cj.D)
-	if err != nil || derr != nil {
+	if cj.T == "" {
+		cj.T = "00:00" // cursors from before transactions had a time
+	}
+	_, terr := time.Parse("15:04", cj.T)
+	if err != nil || derr != nil || terr != nil {
 		return nil, badRequest("cursor is invalid")
 	}
-	return &store.TxCursor{OccurredOn: day, CreatedAt: cj.C, ID: cj.I}, nil
+	return &store.TxCursor{OccurredOn: day, SortTime: cj.T, CreatedAt: cj.C, ID: cj.I}, nil
 }
 
 func (a *api) writeTransaction(w http.ResponseWriter, r *http.Request, status int, id uuid.UUID) {

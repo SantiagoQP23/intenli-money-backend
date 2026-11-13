@@ -40,15 +40,17 @@ type Entry struct {
 }
 
 type Transaction struct {
-	ID          uuid.UUID
-	Type        TxType
-	OccurredOn  time.Time
-	Description string
-	CategoryID  *uuid.UUID
-	Entries     []Entry
-	CreatedBy   uuid.UUID
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID         uuid.UUID
+	Type       TxType
+	OccurredOn time.Time
+	// OccurredTime is the local time of day as "15:04", or nil when unknown.
+	OccurredTime *string
+	Description  string
+	CategoryID   *uuid.UUID
+	Entries      []Entry
+	CreatedBy    uuid.UUID
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func insertEntries(ctx context.Context, db DB, workspaceID, txID uuid.UUID, entries []Entry) error {
@@ -66,9 +68,9 @@ func insertEntries(ctx context.Context, db DB, workspaceID, txID uuid.UUID, entr
 func InsertTransaction(ctx context.Context, db DB, workspaceID uuid.UUID, t Transaction) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := db.QueryRow(ctx,
-		`INSERT INTO transactions (workspace_id, type, occurred_on, description, category_id, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		workspaceID, t.Type, t.OccurredOn, t.Description, t.CategoryID, t.CreatedBy).Scan(&id)
+		`INSERT INTO transactions (workspace_id, type, occurred_on, occurred_time, description, category_id, created_by)
+		 VALUES ($1, $2, $3, $4::time, $5, $6, $7) RETURNING id`,
+		workspaceID, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID, t.CreatedBy).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -87,9 +89,10 @@ func LockTransaction(ctx context.Context, db DB, workspaceID, id uuid.UUID) erro
 // ReplaceTransaction overwrites a live transaction and its entries.
 func ReplaceTransaction(ctx context.Context, db DB, workspaceID, id uuid.UUID, t Transaction) error {
 	tag, err := db.Exec(ctx,
-		`UPDATE transactions SET type = $3, occurred_on = $4, description = $5, category_id = $6, updated_at = now()
+		`UPDATE transactions SET type = $3, occurred_on = $4, occurred_time = $5::time, description = $6, category_id = $7,
+		   updated_at = now()
 		 WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-		workspaceID, id, t.Type, t.OccurredOn, t.Description, t.CategoryID)
+		workspaceID, id, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID)
 	if err != nil {
 		return err
 	}
@@ -126,6 +129,7 @@ func GetTransaction(ctx context.Context, db DB, workspaceID, id uuid.UUID) (Tran
 // TxCursor is the position after the last row of a page.
 type TxCursor struct {
 	OccurredOn time.Time
+	SortTime   string // occurred_time as "15:04", "00:00" when unknown
 	CreatedAt  time.Time
 	ID         uuid.UUID
 }
@@ -167,16 +171,16 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		add("t.occurred_on <= $%d", *f.To)
 	}
 	if f.After != nil {
-		args = append(args, f.After.OccurredOn, f.After.CreatedAt, f.After.ID)
+		args = append(args, f.After.OccurredOn, f.After.SortTime, f.After.CreatedAt, f.After.ID)
 		n := len(args)
-		where = append(where, fmt.Sprintf("(t.occurred_on, t.created_at, t.id) < ($%d, $%d, $%d)", n-2, n-1, n))
+		where = append(where, fmt.Sprintf("(t.occurred_on, coalesce(t.occurred_time, '00:00'), t.created_at, t.id) < ($%d, $%d::time, $%d, $%d)", n-3, n-2, n-1, n))
 	}
 	args = append(args, f.Limit)
 
 	rows, err := db.Query(ctx, fmt.Sprintf(
-		`SELECT t.id, t.type, t.occurred_on, t.description, t.category_id, t.created_by, t.created_at, t.updated_at
+		`SELECT t.id, t.type, t.occurred_on, to_char(t.occurred_time, 'HH24:MI'), t.description, t.category_id, t.created_by, t.created_at, t.updated_at
 		 FROM transactions t WHERE %s
-		 ORDER BY t.occurred_on DESC, t.created_at DESC, t.id DESC LIMIT $%d`,
+		 ORDER BY t.occurred_on DESC, coalesce(t.occurred_time, '00:00') DESC, t.created_at DESC, t.id DESC LIMIT $%d`,
 		strings.Join(where, " AND "), len(args)), args...)
 	if err != nil {
 		return nil, err
@@ -185,7 +189,7 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 	index := map[uuid.UUID]int{}
 	for rows.Next() {
 		var t Transaction
-		if err := rows.Scan(&t.ID, &t.Type, &t.OccurredOn, &t.Description, &t.CategoryID, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &t.OccurredOn, &t.OccurredTime, &t.Description, &t.CategoryID, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
