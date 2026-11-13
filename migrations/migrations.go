@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 //go:embed *.sql
@@ -22,7 +23,12 @@ func Up(ctx context.Context, databaseURL string) error {
 	}
 	defer db.Close()
 
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, files)
+	// The session lock lets several API instances start at once safely.
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("init migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithSessionLocker(locker))
 	if err != nil {
 		return fmt.Errorf("init migrations: %w", err)
 	}

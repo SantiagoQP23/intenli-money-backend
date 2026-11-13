@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SantiagoQP23/intenli-money-backend/internal/auth"
 	"github.com/SantiagoQP23/intenli-money-backend/internal/config"
 	"github.com/SantiagoQP23/intenli-money-backend/internal/database"
 	"github.com/SantiagoQP23/intenli-money-backend/internal/httpapi"
@@ -54,6 +55,10 @@ func run(args []string) error {
 		}
 	}
 
+	if len(cfg.GoogleClientIDs) == 0 {
+		logger.Warn("GOOGLE_CLIENT_IDS is empty: Google sign-in is disabled")
+	}
+
 	pool, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -61,8 +66,18 @@ func run(args []string) error {
 	defer pool.Close()
 
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewRouter(httpapi.Deps{Logger: logger, DB: pool, CORSOrigins: cfg.CORSOrigins}),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.NewRouter(httpapi.Deps{
+			Logger:        logger,
+			DB:            pool,
+			Pool:          pool,
+			CORSOrigins:   cfg.CORSOrigins,
+			AccessTokens:  auth.NewAccessTokens(cfg.JWTSecret, cfg.AccessTokenTTL),
+			Google:        auth.NewGoogleVerifier(cfg.GoogleClientIDs),
+			RefreshTTL:    cfg.RefreshTokenTTL,
+			InvitationTTL: cfg.InvitationTTL,
+			AuthRateLimit: cfg.AuthRateLimit,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
