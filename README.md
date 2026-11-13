@@ -66,6 +66,65 @@ All `/v1` routes except `/v1/auth/*` need `Authorization: Bearer <access_token>`
 | `DELETE /v1/workspaces/{id}/invitations/{invitationID}` | owner | Revoke |
 | `POST /v1/invitations/accept` | signed in | `{token}`: only works for the invited email |
 
+Financial data (every member reads; editors and owners write):
+
+| Route | What |
+| --- | --- |
+| `GET /v1/currencies` | Supported currencies with their decimal places (no sign-in needed) |
+| `GET`, `POST /v1/workspaces/{id}/accounts` | `{name, type: CASH\|BANK\|SAVINGS\|WALLET\|CREDIT_CARD, currency?, opening_balance?}`. Each account includes its `balance` |
+| `GET`, `PATCH /v1/workspaces/{id}/accounts/{accountID}` | `{name?, type?, opening_balance?, archived?}`. Currency is fixed |
+| `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name}`. New workspaces start with defaults |
+| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename / archive |
+| `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
+| `GET /v1/workspaces/{id}/transactions` | Newest first. Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `POST /v1/workspaces/{id}/transactions` | See below |
+| `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
+| `GET`, `POST /v1/workspaces/{id}/contacts`, `PUT …/contacts/{contactID}` | Suppliers, customers, lenders: `{name, notes?, archived?}` |
+| `GET /v1/workspaces/{id}/obligations` | Debts. Filters: `direction` (`PAYABLE`\|`RECEIVABLE`), `contact_id`, `status` (`open`\|`paid`), `today` |
+| `POST /v1/workspaces/{id}/obligations` | See below |
+| `GET`, `PUT`, `DELETE /v1/workspaces/{id}/obligations/{obligationID}` | GET includes `payments`. PUT replaces `{description, due_on, contact_id \| contact_name}`. DELETE only without payments, and removes its transaction too |
+| `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, description?, exchange_rate?, idempotency_key?}`: pays or collects. Returns the debt |
+| `DELETE …/obligations/{obligationID}/payments/{paymentID}` | Undo a payment |
+| `GET /v1/workspaces/{id}/summary` | Home: balances, income and expenses for `from`–`to` (default this month), open payables and receivables, `net_worth`, next 5 `upcoming_due`, `missing_rates` |
+| `GET /v1/workspaces/{id}/reports/categories` | `type=EXPENSE\|INCOME`, `from`, `to`: totals and share per category |
+| `GET /v1/workspaces/{id}/reports/monthly` | `months=6`: income, expenses and net per month, oldest first |
+
+Transaction bodies:
+
+```jsonc
+// INCOME or EXPENSE
+{"type": "EXPENSE", "occurred_on": "2026-11-13", "account_id": "…", "amount": "12.50",
+ "category_id": "…", "description": "Almuerzo", "exchange_rate": "1.08"}
+// TRANSFER (to_amount only when the currencies differ)
+{"type": "TRANSFER", "occurred_on": "2026-11-13", "from_account_id": "…", "to_account_id": "…",
+ "amount": "54.00", "to_amount": "50.00"}
+```
+
+Debt bodies (`contact_name` reuses or creates a contact; `due_on` is optional):
+
+```jsonc
+// Bought 100 on credit, paid 30 now: one EXPENSE of 100, debt of 70
+{"origin": "PURCHASE", "amount": "100", "paid_now": "30", "account_id": "…", "category_id": "…",
+ "contact_name": "Proveedor A", "occurred_on": "2026-11-05", "due_on": "2026-11-20"}
+// SALE works the same way as INCOME. Loans move the whole amount through the account:
+{"origin": "LOAN_BORROWED", "amount": "1000", "account_id": "…", "occurred_on": "2026-11-03"}
+// A debt from before you started using the app: no money moves
+{"origin": "OTHER", "direction": "RECEIVABLE", "amount": "25", "occurred_on": "2026-10-01"}
+```
+
+Routes that show what's overdue take `today=YYYY-MM-DD` so the client's local date decides; otherwise the server uses its UTC date.
+
+### Money rules
+
+- Amounts are JSON strings, stored as `NUMERIC`, and checked against the currency's decimal places (CLP and JPY have none). The code never uses floats.
+- Each transaction stores its account movements (`entries`) in the account currency, the rate used, and the `base_amount` in the workspace base currency. Totals therefore never mix currencies, and old transactions keep their original rate.
+- `exchange_rate` means "1 account currency = rate base currency". When it's omitted, the latest saved rate on or before the date is used, and any rate you send is saved for next time.
+- A transfer gives both entries the same base value, so it never counts as income or expense. Balances are always computed and never stored.
+- A debt is counted once, when it starts. A purchase on credit is one `EXPENSE` for the full price, made of the cash paid now plus the payable for the rest. Paying the payable later is a `SETTLEMENT` (cash out, payable down) that nets to zero, so it is never a second expense. Sales mirror this with `INCOME`. Loans are `LOAN` transactions, which are neither income nor expense.
+- What's still owed, the status (`UNPAID`, `PARTIALLY_PAID`, `PAID`) and `overdue` are computed from the payments, never stored. A payment can't be more than what's outstanding, must use an account in the debt's currency, and retrying with the same `idempotency_key` doesn't pay twice.
+- Transactions created by a debt can only be changed through the debt (`409 managed_by_obligation`).
+- Archived accounts and categories keep their history but can't be used for new transactions.
+
 A session is `{user, access_token, refresh_token, token_type, expires_in}`. Access tokens last 15 minutes. Refresh tokens rotate on every use, and reusing an old one revokes that whole session, which catches stolen tokens. Workspace routes answer 404 to non-members, so IDs can't be probed.
 
 ### Sign-in rules

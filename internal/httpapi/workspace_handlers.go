@@ -46,6 +46,10 @@ func (a *api) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.currencySupported(w, r, req.BaseCurrency) {
+		return
+	}
+
 	var m store.Membership
 	err = store.InTx(r.Context(), a.pool, func(tx pgx.Tx) error {
 		var err error
@@ -364,4 +368,18 @@ func (a *api) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, toWorkspaceDTO(m))
 	}
+}
+
+// currencySupported answers 400 and returns false for an unknown currency.
+func (a *api) currencySupported(w http.ResponseWriter, r *http.Request, code string) bool {
+	curs, err := a.currencies.get(r.Context(), a.db)
+	if err != nil {
+		a.internalError(w, r, err)
+		return false
+	}
+	if _, ok := curs[code]; !ok {
+		writeError(w, http.StatusBadRequest, "unsupported_currency", "base_currency is not a supported currency")
+		return false
+	}
+	return true
 }

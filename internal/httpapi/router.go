@@ -46,6 +46,7 @@ type api struct {
 	refreshTTL    time.Duration
 	invitationTTL time.Duration
 	now           func() time.Time
+	currencies    currencyCache
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -96,6 +97,9 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/logout", a.handleLogout)
 		})
 
+		// Public so sign-up can offer a base currency picker.
+		r.Get("/currencies", a.handleListCurrencies)
+
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireAuth)
 
@@ -122,6 +126,44 @@ func NewRouter(d Deps) http.Handler {
 				r.With(owner).Get("/invitations", a.handleListInvitations)
 				r.With(owner).Post("/invitations", a.handleCreateInvitation)
 				r.With(owner).Delete("/invitations/{invitationID}", a.handleRevokeInvitation)
+
+				// Financial data: every member reads, editors and owners write.
+				editor := requireRole(store.RoleEditor)
+
+				r.Get("/accounts", a.handleListAccounts)
+				r.With(editor).Post("/accounts", a.handleCreateAccount)
+				r.Get("/accounts/{accountID}", a.handleGetAccount)
+				r.With(editor).Patch("/accounts/{accountID}", a.handleUpdateAccount)
+
+				r.Get("/categories", a.handleListCategories)
+				r.With(editor).Post("/categories", a.handleCreateCategory)
+				r.With(editor).Patch("/categories/{categoryID}", a.handleRenameCategory)
+				r.With(editor).Delete("/categories/{categoryID}", a.handleArchiveCategory)
+
+				r.Get("/exchange-rates", a.handleListRates)
+				r.With(editor).Put("/exchange-rates", a.handleSetRate)
+
+				r.Get("/transactions", a.handleListTransactions)
+				r.With(editor).Post("/transactions", a.handleCreateTransaction)
+				r.Get("/transactions/{transactionID}", a.handleGetTransaction)
+				r.With(editor).Put("/transactions/{transactionID}", a.handleReplaceTransaction)
+				r.With(editor).Delete("/transactions/{transactionID}", a.handleDeleteTransaction)
+
+				r.Get("/contacts", a.handleListContacts)
+				r.With(editor).Post("/contacts", a.handleCreateContact)
+				r.With(editor).Put("/contacts/{contactID}", a.handleUpdateContact)
+
+				r.Get("/obligations", a.handleListObligations)
+				r.With(editor).Post("/obligations", a.handleCreateObligation)
+				r.Get("/obligations/{obligationID}", a.handleGetObligation)
+				r.With(editor).Put("/obligations/{obligationID}", a.handleUpdateObligation)
+				r.With(editor).Delete("/obligations/{obligationID}", a.handleDeleteObligation)
+				r.With(editor).Post("/obligations/{obligationID}/payments", a.handleCreatePayment)
+				r.With(editor).Delete("/obligations/{obligationID}/payments/{paymentID}", a.handleDeletePayment)
+
+				r.Get("/summary", a.handleSummary)
+				r.Get("/reports/categories", a.handleCategoryReport)
+				r.Get("/reports/monthly", a.handleMonthlyReport)
 			})
 		})
 	})
