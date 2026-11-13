@@ -139,6 +139,7 @@ func NewRouter(d Deps) http.Handler {
 				r.With(editor).Post("/categories", a.handleCreateCategory)
 				r.With(editor).Patch("/categories/{categoryID}", a.handleRenameCategory)
 				r.With(editor).Delete("/categories/{categoryID}", a.handleArchiveCategory)
+				r.With(editor).Post("/categories/{categoryID}/restore", a.handleRestoreCategory)
 
 				r.Get("/exchange-rates", a.handleListRates)
 				r.With(editor).Put("/exchange-rates", a.handleSetRate)

@@ -150,6 +150,21 @@ func ArchiveCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) erro
 	return err
 }
 
+// RestoreCategory brings an archived category back. ErrConflict means an
+// active category of that kind already has the name.
+func RestoreCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) error {
+	tag, err := db.Exec(ctx,
+		`UPDATE categories SET archived_at = NULL WHERE workspace_id = $1 AND id = $2 AND archived_at IS NOT NULL`,
+		workspaceID, id)
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 // ---- Exchange rates ----
 
 // LatestRate returns the newest rate for from→base on or before day.

@@ -308,6 +308,15 @@ func TestCategories(t *testing.T) {
 	ta.expect(ta.do("PUT", ws+"/transactions/"+tx.str("id"), s.access, map[string]any{
 		"type": "EXPENSE", "occurred_on": "2026-11-01", "account_id": cash, "amount": "6", "category_id": c.str("id"),
 	}), http.StatusOK)
-	// The name is free again.
-	ta.expect(ta.do("POST", ws+"/categories", s.access, map[string]any{"kind": "EXPENSE", "name": "Camarón"}), http.StatusCreated)
+	// The name is free again, so restoring the old one now conflicts.
+	again := ta.expect(ta.do("POST", ws+"/categories", s.access, map[string]any{"kind": "EXPENSE", "name": "Camarón"}), http.StatusCreated)
+	if r := ta.do("POST", ws+"/categories/"+c.str("id")+"/restore", s.access, nil); r.errCode() != "category_exists" {
+		t.Fatalf("restore with clash: %s", r.Raw)
+	}
+	ta.expect(ta.do("DELETE", ws+"/categories/"+again.str("id"), s.access, nil), http.StatusNoContent)
+	ta.expect(ta.do("POST", ws+"/categories/"+c.str("id")+"/restore", s.access, nil), http.StatusNoContent)
+	ta.expect(ta.do("POST", ws+"/categories/"+c.str("id")+"/restore", s.access, nil), http.StatusNotFound) // not archived
+	ta.expect(ta.do("POST", ws+"/transactions", s.access, map[string]any{
+		"type": "EXPENSE", "occurred_on": "2026-11-02", "account_id": cash, "amount": "5", "category_id": c.str("id"),
+	}), http.StatusCreated)
 }
