@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -288,4 +289,68 @@ func (a *api) handleMonthlyReport(w http.ResponseWriter, r *http.Request) {
 		out[i] = monthDTO{key, formatAmount(ie.Income, p), formatAmount(ie.Expenses, p), formatAmount(ie.Income.Sub(ie.Expenses), p)}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"base_currency": m.BaseCurrency, "data": out})
+}
+
+// GET /v1/workspaces/{workspaceID}/transactions/totals?from&to&type&account_id
+//
+// The totals strip above a transaction list (default period: this month).
+// Without account_id: income and expenses in the base currency (type may
+// narrow it to INCOME or EXPENSE). With account_id: money in and out of that
+// account in its currency, every type counted unless type narrows it; "net"
+// is then the balance change over the period.
+func (a *api) handleTransactionTotals(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	m := membershipFrom(ctx)
+	q := r.URL.Query()
+	from, to, err := a.period(r)
+	if writeBadRequest(w, err) {
+		return
+	}
+	var typ *store.TxType
+	if v := q.Get("type"); v != "" {
+		t := store.TxType(v)
+		if !t.Known() {
+			writeBadRequest(w, badRequest("type must be INCOME, EXPENSE, TRANSFER, SETTLEMENT or LOAN"))
+			return
+		}
+		typ = &t
+	}
+	currency := m.BaseCurrency
+	var accountID *uuid.UUID
+	if v := q.Get("account_id"); v != "" {
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			writeBadRequest(w, badRequest("account_id must be a UUID"))
+			return
+		}
+		acc, err := store.GetAccount(ctx, a.db, m.ID, id)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account_not_found", "account not found")
+			return
+		}
+		if err != nil {
+			a.internalError(w, r, err)
+			return
+		}
+		accountID, currency = &id, acc.Currency
+	}
+	totals, err := store.PeriodTotals(ctx, a.db, m.ID, accountID, typ, from, to)
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	curs, err := a.currencies.get(ctx, a.db)
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	p := curs[currency].Precision
+	writeJSON(w, http.StatusOK, map[string]any{
+		"from":     from.Format(time.DateOnly),
+		"to":       to.Format(time.DateOnly),
+		"currency": currency,
+		"income":   formatAmount(totals.Income, p),
+		"expenses": formatAmount(totals.Expenses, p),
+		"net":      formatAmount(totals.Income.Sub(totals.Expenses), p),
+	})
 }

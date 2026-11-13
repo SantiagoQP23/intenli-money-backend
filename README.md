@@ -83,6 +83,7 @@ Financial data (every member reads; editors and owners write):
 | `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive. `409 category_exists` if an active one has the name |
 | `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
 | `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `GET /v1/workspaces/{id}/transactions/totals` | Totals strip for `from`–`to` (default this month): `{currency, income, expenses, net}`. Without `account_id`, income and expenses in the base currency (`type` narrows to one). With `account_id`, money in and out of that account in its currency, every type counted, so `net` is the balance change |
 | `POST /v1/workspaces/{id}/transactions` | See below |
 | `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
 | `GET`, `POST /v1/workspaces/{id}/contacts`, `PUT …/contacts/{contactID}` | Suppliers, customers, lenders: `{name, notes?, archived?}` |

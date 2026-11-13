@@ -146,6 +146,7 @@ func NewRouter(d Deps) http.Handler {
 				r.With(editor).Put("/exchange-rates", a.handleSetRate)
 
 				r.Get("/transactions", a.handleListTransactions)
+				r.Get("/transactions/totals", a.handleTransactionTotals)
 				r.With(editor).Post("/transactions", a.handleCreateTransaction)
 				r.Get("/transactions/{transactionID}", a.handleGetTransaction)
 				r.With(editor).Put("/transactions/{transactionID}", a.handleReplaceTransaction)
