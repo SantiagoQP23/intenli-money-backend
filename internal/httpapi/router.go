@@ -46,6 +46,7 @@ type api struct {
 	refreshTTL    time.Duration
 	invitationTTL time.Duration
 	now           func() time.Time
+	currencies    currencyCache
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -103,6 +104,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Patch("/users/me", a.handleUpdateMe)
 
 			r.Post("/invitations/accept", a.handleAcceptInvitation)
+			r.Get("/currencies", a.handleListCurrencies)
 
 			r.Get("/workspaces", a.handleListWorkspaces)
 			r.Post("/workspaces", a.handleCreateWorkspace)
@@ -122,6 +124,28 @@ func NewRouter(d Deps) http.Handler {
 				r.With(owner).Get("/invitations", a.handleListInvitations)
 				r.With(owner).Post("/invitations", a.handleCreateInvitation)
 				r.With(owner).Delete("/invitations/{invitationID}", a.handleRevokeInvitation)
+
+				// Financial data: every member reads, editors and owners write.
+				editor := requireRole(store.RoleEditor)
+
+				r.Get("/accounts", a.handleListAccounts)
+				r.With(editor).Post("/accounts", a.handleCreateAccount)
+				r.Get("/accounts/{accountID}", a.handleGetAccount)
+				r.With(editor).Patch("/accounts/{accountID}", a.handleUpdateAccount)
+
+				r.Get("/categories", a.handleListCategories)
+				r.With(editor).Post("/categories", a.handleCreateCategory)
+				r.With(editor).Patch("/categories/{categoryID}", a.handleRenameCategory)
+				r.With(editor).Delete("/categories/{categoryID}", a.handleArchiveCategory)
+
+				r.Get("/exchange-rates", a.handleListRates)
+				r.With(editor).Put("/exchange-rates", a.handleSetRate)
+
+				r.Get("/transactions", a.handleListTransactions)
+				r.With(editor).Post("/transactions", a.handleCreateTransaction)
+				r.Get("/transactions/{transactionID}", a.handleGetTransaction)
+				r.With(editor).Put("/transactions/{transactionID}", a.handleReplaceTransaction)
+				r.With(editor).Delete("/transactions/{transactionID}", a.handleDeleteTransaction)
 			})
 		})
 	})

@@ -66,6 +66,39 @@ All `/v1` routes except `/v1/auth/*` need `Authorization: Bearer <access_token>`
 | `DELETE /v1/workspaces/{id}/invitations/{invitationID}` | owner | Revoke |
 | `POST /v1/invitations/accept` | signed in | `{token}`: only works for the invited email |
 
+Financial data (every member reads; editors and owners write):
+
+| Route | What |
+| --- | --- |
+| `GET /v1/currencies` | Supported currencies with their decimal places |
+| `GET`, `POST /v1/workspaces/{id}/accounts` | `{name, type: CASH\|BANK\|SAVINGS\|WALLET\|CREDIT_CARD, currency?, opening_balance?}`. Each account includes its `balance` |
+| `GET`, `PATCH /v1/workspaces/{id}/accounts/{accountID}` | `{name?, type?, opening_balance?, archived?}`. Currency is fixed |
+| `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name}`. New workspaces start with defaults |
+| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename / archive |
+| `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
+| `GET /v1/workspaces/{id}/transactions` | Newest first. Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `POST /v1/workspaces/{id}/transactions` | See below |
+| `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
+
+Transaction bodies:
+
+```jsonc
+// INCOME or EXPENSE
+{"type": "EXPENSE", "occurred_on": "2026-11-13", "account_id": "…", "amount": "12.50",
+ "category_id": "…", "description": "Almuerzo", "exchange_rate": "1.08"}
+// TRANSFER (to_amount only when the currencies differ)
+{"type": "TRANSFER", "occurred_on": "2026-11-13", "from_account_id": "…", "to_account_id": "…",
+ "amount": "54.00", "to_amount": "50.00"}
+```
+
+### Money rules
+
+- Amounts are JSON strings, stored as `NUMERIC`, and checked against the currency's decimal places (CLP and JPY have none). The code never uses floats.
+- Each transaction stores its account movements (`entries`) in the account currency, the rate used, and the `base_amount` in the workspace base currency. Totals therefore never mix currencies, and old transactions keep their original rate.
+- `exchange_rate` means "1 account currency = rate base currency". When it's omitted, the latest saved rate on or before the date is used, and any rate you send is saved for next time.
+- A transfer gives both entries the same base value, so it never counts as income or expense. Balances are always computed and never stored.
+- Archived accounts and categories keep their history but can't be used for new transactions.
+
 A session is `{user, access_token, refresh_token, token_type, expires_in}`. Access tokens last 15 minutes. Refresh tokens rotate on every use, and reusing an old one revokes that whole session, which catches stolen tokens. Workspace routes answer 404 to non-members, so IDs can't be probed.
 
 ### Sign-in rules
