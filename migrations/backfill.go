@@ -14,7 +14,7 @@ import (
 // someone renamed, archived or set up by hand changes. Nothing is deleted.
 func BackfillDefaultCategories(ctx context.Context, tx *sql.Tx) error {
 	for _, typ := range []string{"PERSONAL", "SHARED", "BUSINESS"} {
-		for _, c := range defaults.For(typ) {
+		for _, c := range defaults.For(typ, "es") {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO categories (workspace_id, kind, name, icon)
 				SELECT w.id, $2, $3, $4 FROM workspaces w

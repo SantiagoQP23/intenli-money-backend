@@ -58,9 +58,10 @@ type Category struct {
 	ArchivedAt *time.Time
 }
 
-// CreateDefaultCategories seeds a new workspace with the defaults for its type.
-func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID, typ WorkspaceType) error {
-	for _, c := range defaults.For(string(typ)) {
+// CreateDefaultCategories seeds a new workspace with the defaults for its
+// type, named in locale ("es" or "en").
+func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID, typ WorkspaceType, locale string) error {
+	for _, c := range defaults.For(string(typ), locale) {
 		if _, err := db.Exec(ctx,
 			`INSERT INTO categories (workspace_id, kind, name, icon) VALUES ($1, $2, $3, $4)`,
 			workspaceID, c.Kind, c.Name, c.Icon); err != nil {

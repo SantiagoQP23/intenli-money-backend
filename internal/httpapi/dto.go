@@ -14,6 +14,7 @@ type userDTO struct {
 	EmailVerified bool      `json:"email_verified"`
 	Name          string    `json:"name"`
 	HasPassword   bool      `json:"has_password"`
+	Locale        string    `json:"locale"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -24,6 +25,7 @@ func toUserDTO(u store.User) userDTO {
 		EmailVerified: u.EmailVerified,
 		Name:          u.Name,
 		HasPassword:   u.PasswordHash != nil,
+		Locale:        u.Locale,
 		CreatedAt:     u.CreatedAt,
 	}
 }
