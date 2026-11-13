@@ -61,3 +61,21 @@ func TestNotFoundUsesErrorShape(t *testing.T) {
 		t.Fatalf("unexpected body: %+v", body)
 	}
 }
+
+func TestCORSAllowsConfiguredOrigin(t *testing.T) {
+	h := NewRouter(Deps{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{}, CORSOrigins: []string{"http://localhost:8081"}})
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "http://localhost:8081")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8081" {
+		t.Fatalf("allowed origin not echoed, got %q", got)
+	}
+
+	req.Header.Set("Origin", "https://evil.example")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unknown origin must not be allowed, got %q", got)
+	}
+}

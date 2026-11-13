@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 )
 
 // Pinger is the part of the database pool the health checks need.
@@ -17,8 +18,9 @@ type Pinger interface {
 }
 
 type Deps struct {
-	Logger *slog.Logger
-	DB     Pinger
+	Logger      *slog.Logger
+	DB          Pinger
+	CORSOrigins []string
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -28,6 +30,14 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(requestLogger(d.Logger))
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
+	if len(d.CORSOrigins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins: d.CORSOrigins,
+			AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-Workspace-ID"},
+			MaxAge:         300,
+		}))
+	}
 
 	r.Get("/healthz", handleLiveness)
 	r.Get("/readyz", handleReadiness(d.DB))

@@ -37,6 +37,7 @@ Check it: `curl localhost:8080/healthz` (process is up) and `curl localhost:8080
 | `HTTP_ADDR` | `:8080` | |
 | `AUTO_MIGRATE` | `true` in development, `false` in production | Apply migrations on startup |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:8081` in development, none in production | Comma-separated browser origins (Expo web); native apps don't need CORS |
 
 ## Layout
 

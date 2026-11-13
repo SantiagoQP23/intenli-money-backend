@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -20,6 +21,9 @@ type Config struct {
 	DatabaseURL string
 	AutoMigrate bool
 	LogLevel    slog.Level
+	// CORSOrigins are browser origins allowed to call the API (Expo web in
+	// development). Native apps do not need CORS.
+	CORSOrigins []string
 }
 
 // Load reads configuration from the environment. DATABASE_URL is required;
@@ -47,7 +51,25 @@ func Load() (Config, error) {
 	if err := cfg.LogLevel.UnmarshalText([]byte(getenv("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
 	}
+	cfg.CORSOrigins = splitList(getenv("CORS_ALLOWED_ORIGINS", devOrigins(cfg.Env)))
 	return cfg, nil
+}
+
+func devOrigins(env string) string {
+	if env == EnvDevelopment {
+		return "http://localhost:8081"
+	}
+	return ""
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func getenv(key, fallback string) string {

@@ -62,7 +62,7 @@ func run(args []string) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewRouter(httpapi.Deps{Logger: logger, DB: pool}),
+		Handler:           httpapi.NewRouter(httpapi.Deps{Logger: logger, DB: pool, CORSOrigins: cfg.CORSOrigins}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
