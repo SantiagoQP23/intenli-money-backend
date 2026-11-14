@@ -82,7 +82,7 @@ Financial data (every member reads; editors and owners write):
 | `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename `{name, icon?, parent_id?}` (`""` clears the icon; `parent_id` moves it, `null` = top level; `409 category_has_subcategories` when moving a parent) / archive, with its subcategories (past transactions keep them) |
 | `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive, with the subcategories archived along with it. `409 category_exists` if an active sibling has the name, `409 parent_archived` for a subcategory whose parent is archived |
 | `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
-| `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id` (a parent includes its subcategories), `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id` (a parent includes its subcategories), `box_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
 | `GET /v1/workspaces/{id}/transactions/totals` | Totals strip for `from`–`to` (default this month): `{currency, income, expenses, net}`. Without `account_id`, income and expenses in the base currency (`type` narrows to one). With `account_id`, money in and out of that account in its currency, every type counted, so `net` is the balance change |
 | `POST /v1/workspaces/{id}/transactions` | See below |
 | `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
@@ -90,10 +90,17 @@ Financial data (every member reads; editors and owners write):
 | `GET /v1/workspaces/{id}/obligations` | Debts. Filters: `direction` (`PAYABLE`\|`RECEIVABLE`), `contact_id`, `status` (`open`\|`paid`), `today` |
 | `POST /v1/workspaces/{id}/obligations` | See below |
 | `GET`, `PUT`, `DELETE /v1/workspaces/{id}/obligations/{obligationID}` | GET includes `payments` and `increases`. PUT replaces `{description, due_on, contact_id \| contact_name}`. DELETE only without payments, and removes its transaction and increases too |
-| `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, paid_time?, description?, exchange_rate?, idempotency_key?}`: pays or collects. Returns the debt |
+| `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, paid_time?, description?, exchange_rate?, box_id?, idempotency_key?}`: pays or collects (from or into a box when `box_id` is set). Returns the debt |
 | `PUT`, `DELETE …/obligations/{obligationID}/payments/{paymentID}` | PUT edits a payment (same body, no key); its transaction is rewritten in place. DELETE undoes it |
 | `POST …/obligations/{obligationID}/increases` | `{kind, amount, occurred_on, occurred_time?, description?, account_id?, category_id?, exchange_rate?, idempotency_key?}`: the debt grows. `MONEY` (needs `account_id`): borrowed or lent more, a `LOAN` transaction. `CHARGE` (optional `category_id`): bought or sold more on credit, interest, fees; an `EXPENSE`/`INCOME` with no cash. `ADJUSTMENT`: a correction, no transaction |
 | `PUT`, `DELETE …/obligations/{obligationID}/increases/{increaseID}` | Edit (kind can't change) or remove an increase. Refused with `below_paid` if the debt would drop under what's paid |
+| `GET /v1/workspaces/{id}/boxes` | `{wallets, data}`: unassigned money per currency (`accounts_total`, `in_boxes`, `unassigned`, base currency first) and the boxes with `balance`, this month's `month` (`spent`, `progress`, `needs_fill`) and the savings `goal` (`progress`, `missing`, `per_month`). `include_archived`, `today` |
+| `POST /v1/workspaces/{id}/boxes` | `{kind: SAVINGS\|BUDGET, name, icon?, currency?, monthly_amount?, goal_amount?, goal_date?, category_ids?}`. A budget has `monthly_amount`, savings a goal. `category_ids` makes those categories suggest this box. `409 box_name_taken` |
+| `GET`, `PUT /v1/workspaces/{id}/boxes/{boxID}` | GET adds `history` (allocations and linked transactions, newest first). PUT takes the POST body; the currency can't change once the box has movements (`409 box_has_history`) |
+| `POST …/boxes/{boxID}/archive`, `…/restore` | Archive returns the balance to the wallet and frees its categories; restore brings it back empty |
+| `POST …/boxes/{boxID}/allocations`, `DELETE …/allocations/{allocationID}` | `{amount, note?, occurred_on?, idempotency_key?}`: positive assigns from the wallet, negative releases to it. DELETE undoes one (both sides of a move) |
+| `POST /v1/workspaces/{id}/boxes/moves` | `{from_box_id, to_box_id, amount, note?}`: same currency only. Returns the overview |
+| `POST /v1/workspaces/{id}/boxes/fill` | `{dry_run?, occurred_on?}`: tops each budget up to its `monthly_amount` from the wallet. Returns `items` and per-currency `totals` with `wallet_after` |
 | `GET /v1/workspaces/{id}/summary` | Home: balances, income and expenses for `from`–`to` (default this month), open payables and receivables, `net_worth`, next 5 `upcoming_due`, `missing_rates` |
 | `GET /v1/workspaces/{id}/reports/categories` | `type=EXPENSE\|INCOME`, `from`, `to`: totals and share per category, with subcategories rolled into their parent. `parent_id` breaks one parent down by subcategory |
 | `GET /v1/workspaces/{id}/reports/monthly` | `months=6`: income, expenses and net per month, oldest first |
@@ -135,6 +142,7 @@ Routes that show what's overdue take `today=YYYY-MM-DD` so the client's local da
 - A debt's `total` is `original_amount` plus `increased`; what's still owed is `total` minus `paid`.
 - What's still owed, the status (`UNPAID`, `PARTIALLY_PAID`, `PAID`) and `overdue` are computed from the payments, never stored. A payment can't be more than what's outstanding, must use an account in the debt's currency, and retrying with the same `idempotency_key` doesn't pay twice.
 - Transactions created by a debt can only be changed through the debt (`409 managed_by_obligation`).
+- Boxes say what money is for; accounts say where it is. A box's balance is its allocations plus the account entries of `INCOME`, `EXPENSE` and `SETTLEMENT` transactions linked with `box_id` (same currency as the account). Per currency, the wallet (`unassigned`) plus every active box always equals every active account. Boxes and the wallet may go negative; transactions are never blocked.
 - Archived accounts and categories keep their history but can't be used for new transactions.
 
 A session is `{user, access_token, refresh_token, token_type, expires_in}`. Access tokens last 15 minutes. Refresh tokens rotate on every use, and reusing an old one revokes that whole session, which catches stolen tokens. Workspace routes answer 404 to non-members, so IDs can't be probed.

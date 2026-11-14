@@ -283,6 +283,8 @@ func TestViewerCannotWrite(t *testing.T) {
 		"type": "EXPENSE", "occurred_on": "2026-11-01", "account_id": cash, "amount": "1",
 	}), http.StatusForbidden)
 	ta.expect(ta.do("POST", path+"/categories", viewer.access, map[string]any{"kind": "EXPENSE", "name": "x"}), http.StatusForbidden)
+	ta.expect(ta.do("GET", path+"/boxes", viewer.access, nil), http.StatusOK)
+	ta.expect(ta.do("POST", path+"/boxes", viewer.access, map[string]any{"kind": "BUDGET", "name": "x"}), http.StatusForbidden)
 }
 
 func TestCategories(t *testing.T) {

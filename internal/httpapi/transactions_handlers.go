@@ -32,6 +32,7 @@ type txRequest struct {
 	OccurredTime  *string      `json:"occurred_time"` // "15:04", optional
 	Description   string       `json:"description"`
 	CategoryID    *uuid.UUID   `json:"category_id"`
+	BoxID         *uuid.UUID   `json:"box_id"` // income and expenses only, same currency as the account
 	AccountID     *uuid.UUID   `json:"account_id"`
 	FromAccountID *uuid.UUID   `json:"from_account_id"`
 	ToAccountID   *uuid.UUID   `json:"to_account_id"`
@@ -63,6 +64,7 @@ type txBuilder struct {
 	curs       map[string]store.Currency
 	day        time.Time
 	keepCatID  *uuid.UUID // an archived category the transaction already had may stay
+	keepBoxID  *uuid.UUID // likewise for an archived box
 	ratesToSet []rateToSave
 }
 
@@ -125,8 +127,8 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 	t := store.Transaction{Type: req.Type, OccurredOn: day, OccurredTime: tod, Description: desc}
 
 	if req.Type == store.TxTransfer {
-		if req.AccountID != nil || req.CategoryID != nil {
-			return t, badRequest("a transfer uses from_account_id and to_account_id and has no category")
+		if req.AccountID != nil || req.CategoryID != nil || req.BoxID != nil {
+			return t, badRequest("a transfer uses from_account_id and to_account_id and has no category or box")
 		}
 		from, err := b.account(ctx, req.FromAccountID, "from_account_id")
 		if err != nil {
@@ -196,6 +198,9 @@ func (b *txBuilder) build(ctx context.Context, req txRequest) (store.Transaction
 		wantKind = store.CategoryIncome
 	}
 	if t.CategoryID, err = b.category(ctx, req.CategoryID, wantKind); err != nil {
+		return t, err
+	}
+	if t.BoxID, err = b.box(ctx, req.BoxID, acc.Currency); err != nil {
 		return t, err
 	}
 	rate, err := b.rate(ctx, acc.Currency, req.ExchangeRate)
@@ -278,6 +283,7 @@ type transactionDTO struct {
 	OccurredTime *string    `json:"occurred_time"`
 	Description  string     `json:"description"`
 	CategoryID   *uuid.UUID `json:"category_id"`
+	BoxID        *uuid.UUID `json:"box_id"`
 	// Amount is the positive amount in the (from) account's currency, and
 	// BaseAmount the same in the workspace base currency.
 	Amount     string     `json:"amount"`
@@ -295,7 +301,7 @@ func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base 
 	dto := transactionDTO{
 		ID: t.ID, Type: t.Type, OccurredOn: t.OccurredOn.Format(time.DateOnly), OccurredTime: t.OccurredTime,
 		Description: t.Description,
-		CategoryID:  t.CategoryID, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		CategoryID:  t.CategoryID, BoxID: t.BoxID, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 		Entries: make([]entryDTO, len(t.Entries)),
 	}
 	basePrec := curs[base].Precision
@@ -338,7 +344,7 @@ func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base 
 
 // GET /v1/workspaces/{workspaceID}/transactions
 // Filters: account_id, category_id (a parent includes its subcategories),
-// type, from, to (dates). Paging: limit
+// box_id, type, from, to (dates). Paging: limit
 // (default 50, max 200) and cursor (next_cursor from the previous page).
 func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -370,6 +376,7 @@ func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 	f.AccountID = parseID("account_id")
 	f.CategoryID = parseID("category_id")
+	f.BoxID = parseID("box_id")
 	f.From = parseDay("from")
 	f.To = parseDay("to")
 	if v := q.Get("type"); v != "" && err == nil {
@@ -543,7 +550,7 @@ func (a *api) handleReplaceTransaction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		b := &txBuilder{a: a, db: tx, m: m, curs: curs, keepCatID: current.CategoryID}
+		b := &txBuilder{a: a, db: tx, m: m, curs: curs, keepCatID: current.CategoryID, keepBoxID: current.BoxID}
 		t, err := b.build(ctx, req)
 		if err != nil {
 			return err
