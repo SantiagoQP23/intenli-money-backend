@@ -136,9 +136,12 @@ type obligationDTO struct {
 	Description string          `json:"description"`
 	OccurredOn  string          `json:"occurred_on"`
 	DueOn       *string         `json:"due_on"`
-	// OriginalAmount is what was owed when the debt started; Paid is the sum
-	// of payments and Outstanding what's left.
+	// OriginalAmount is what was owed when the debt started, Increased the
+	// sum of later increases and Total both together. Paid is the sum of
+	// payments and Outstanding what's left (Total - Paid).
 	OriginalAmount      string           `json:"original_amount"`
+	Increased           string           `json:"increased"`
+	Total               string           `json:"total"`
 	Paid                string           `json:"paid"`
 	Outstanding         string           `json:"outstanding"`
 	Status              ObligationStatus `json:"status"`
@@ -146,6 +149,7 @@ type obligationDTO struct {
 	OriginTransactionID *uuid.UUID       `json:"origin_transaction_id"`
 	CreatedAt           time.Time        `json:"created_at"`
 	Payments            []paymentDTO     `json:"payments,omitempty"`
+	Increases           []increaseDTO    `json:"increases,omitempty"`
 }
 
 type contactRefDTO struct {
@@ -159,7 +163,30 @@ type paymentDTO struct {
 	AccountID     *uuid.UUID `json:"account_id"`
 	Amount        string     `json:"amount"`
 	PaidOn        string     `json:"paid_on"`
+	PaidTime      *string    `json:"paid_time"`
+	Description   string     `json:"description"`
 	CreatedAt     time.Time  `json:"created_at"`
+}
+
+type increaseDTO struct {
+	ID            uuid.UUID          `json:"id"`
+	Kind          store.IncreaseKind `json:"kind"`
+	TransactionID *uuid.UUID         `json:"transaction_id"`
+	AccountID     *uuid.UUID         `json:"account_id"`
+	CategoryID    *uuid.UUID         `json:"category_id"`
+	Amount        string             `json:"amount"`
+	OccurredOn    string             `json:"occurred_on"`
+	OccurredTime  *string            `json:"occurred_time"`
+	Description   string             `json:"description"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+func toIncreaseDTO(in store.Increase, cur store.Currency) increaseDTO {
+	return increaseDTO{
+		ID: in.ID, Kind: in.Kind, TransactionID: in.TransactionID, AccountID: in.AccountID, CategoryID: in.CategoryID,
+		Amount: formatAmount(in.Amount, cur.Precision), OccurredOn: in.OccurredOn.Format(time.DateOnly),
+		OccurredTime: in.OccurredTime, Description: in.Description, CreatedAt: in.CreatedAt,
+	}
 }
 
 func obligationStatus(o store.Obligation) ObligationStatus {
@@ -179,6 +206,8 @@ func toObligationDTO(o store.Obligation, cur store.Currency, today time.Time) ob
 		ID: o.ID, Direction: o.Direction, Origin: o.Origin, Currency: o.Currency, Description: o.Description,
 		OccurredOn:          o.OccurredOn.Format(time.DateOnly),
 		OriginalAmount:      formatAmount(o.OriginalAmount, p),
+		Increased:           formatAmount(o.IncreasedAmount, p),
+		Total:               formatAmount(o.Total(), p),
 		Paid:                formatAmount(o.PaidAmount, p),
 		Outstanding:         formatAmount(o.Outstanding(), p),
 		Status:              obligationStatus(o),
@@ -199,7 +228,8 @@ func toObligationDTO(o store.Obligation, cur store.Currency, today time.Time) ob
 func toPaymentDTO(pm store.Payment, cur store.Currency) paymentDTO {
 	return paymentDTO{
 		ID: pm.ID, TransactionID: pm.TransactionID, AccountID: pm.AccountID,
-		Amount: formatAmount(pm.Amount, cur.Precision), PaidOn: pm.PaidOn.Format(time.DateOnly), CreatedAt: pm.CreatedAt,
+		Amount: formatAmount(pm.Amount, cur.Precision), PaidOn: pm.PaidOn.Format(time.DateOnly),
+		PaidTime: pm.PaidTime, Description: pm.Description, CreatedAt: pm.CreatedAt,
 	}
 }
 
@@ -289,6 +319,11 @@ func (a *api) writeObligation(w http.ResponseWriter, r *http.Request, status int
 		a.internalError(w, r, err)
 		return
 	}
+	increases, err := store.ListIncreases(ctx, a.db, m.ID, id)
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
 	curs, err := a.currencies.get(ctx, a.db)
 	if err != nil {
 		a.internalError(w, r, err)
@@ -299,6 +334,10 @@ func (a *api) writeObligation(w http.ResponseWriter, r *http.Request, status int
 	dto.Payments = make([]paymentDTO, len(payments))
 	for i, pm := range payments {
 		dto.Payments[i] = toPaymentDTO(pm, cur)
+	}
+	dto.Increases = make([]increaseDTO, len(increases))
+	for i, in := range increases {
+		dto.Increases[i] = toIncreaseDTO(in, cur)
 	}
 	writeJSON(w, status, dto)
 }
@@ -601,8 +640,9 @@ func (a *api) handleUpdateObligation(w http.ResponseWriter, r *http.Request) {
 }
 
 // DELETE /v1/workspaces/{workspaceID}/obligations/{obligationID} (editor)
-// removes a debt recorded by mistake, with the transaction that created it.
-// A debt with payments can't be deleted; delete the payments first.
+// removes a debt recorded by mistake, with the transaction that created it
+// and its increases. A debt with payments can't be deleted; delete the
+// payments first, since they moved real money.
 func (a *api) handleDeleteObligation(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	m := membershipFrom(ctx)
@@ -626,6 +666,15 @@ func (a *api) handleDeleteObligation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		increases, err := store.ListIncreases(ctx, tx, m.ID, id)
+		if err != nil {
+			return err
+		}
+		for _, in := range increases {
+			if err := store.SoftDeleteIncrease(ctx, tx, m.ID, in); err != nil {
+				return err
+			}
+		}
 		if o.OriginTransactionID != nil {
 			if err := store.SoftDeleteTransaction(ctx, tx, m.ID, *o.OriginTransactionID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
@@ -642,8 +691,86 @@ func (a *api) handleDeleteObligation(w http.ResponseWriter, r *http.Request) {
 
 // ---- Payments ----
 
+type paymentRequest struct {
+	AccountID      *uuid.UUID `json:"account_id"`
+	Amount         string     `json:"amount"`
+	PaidOn         string     `json:"paid_on"`
+	PaidTime       *string    `json:"paid_time"`
+	Description    string     `json:"description"`
+	ExchangeRate   string     `json:"exchange_rate"`
+	IdempotencyKey string     `json:"idempotency_key"`
+}
+
+// paymentTx checks a payment request against the debt and builds its
+// SETTLEMENT transaction. max is the most the payment may be: what's
+// outstanding, plus the payment's old amount when editing.
+func (b *txBuilder) paymentTx(ctx context.Context, o store.Obligation, req paymentRequest, max decimal.Decimal) (store.Transaction, decimal.Decimal, error) {
+	var t store.Transaction
+	day, err := parseDate("paid_on", req.PaidOn)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	b.day = day
+	tod, err := parseTimeOfDay("paid_time", req.PaidTime)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	acc, err := b.account(ctx, req.AccountID, "account_id")
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	if acc.Currency != o.Currency {
+		return t, decimal.Zero, txError{http.StatusBadRequest, "currency_mismatch", "the account's currency must be the debt's currency (" + o.Currency + ")"}
+	}
+	cur := b.curs[o.Currency]
+	amount, err := parseAmount("amount", req.Amount, cur, false)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	if amount.GreaterThan(max) {
+		return t, decimal.Zero, txError{http.StatusConflict, "overpayment",
+			"amount is more than the outstanding " + formatAmount(max, cur.Precision)}
+	}
+	desc, err := cleanName(req.Description, "description", false, 200)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	if desc == "" {
+		desc = o.Description
+	}
+	rate, err := b.rate(ctx, o.Currency, req.ExchangeRate)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
+	// Paying a payable: cash out (-), payable down (+). Collecting a
+	// receivable: cash in (+), receivable down (-). Nets to zero.
+	cash := amount
+	if o.Direction == store.Payable {
+		cash = amount.Neg()
+	}
+	base := cash.Mul(rate).Round(b.curs[b.m.BaseCurrency].Precision)
+	t = store.Transaction{
+		Type: store.TxSettlement, OccurredOn: day, OccurredTime: tod, Description: desc, CreatedBy: userIDFrom(ctx),
+		Entries: []store.Entry{
+			{AccountID: &acc.ID, Amount: cash, Currency: o.Currency, ExchangeRate: rate, BaseAmount: base},
+			{ObligationID: &o.ID, Amount: cash.Neg(), Currency: o.Currency, ExchangeRate: rate, BaseAmount: base.Neg()},
+		},
+	}
+	return t, amount, nil
+}
+
+func idempotencyKey(raw string) (*string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	if len(raw) > 100 {
+		return nil, badRequest("idempotency_key must be at most 100 characters")
+	}
+	return &raw, nil
+}
+
 // POST /v1/workspaces/{workspaceID}/obligations/{obligationID}/payments (editor)
-// {account_id, amount, paid_on, exchange_rate?, idempotency_key?}
+// {account_id, amount, paid_on, paid_time?, description?, exchange_rate?, idempotency_key?}
 //
 // Pays a payable from the account, or collects a receivable into it, as a
 // SETTLEMENT transaction. The account's currency must be the debt's, and the
@@ -657,24 +784,13 @@ func (a *api) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		a.writeObligationError(w, r, store.ErrNotFound)
 		return
 	}
-	var req struct {
-		AccountID      *uuid.UUID `json:"account_id"`
-		Amount         string     `json:"amount"`
-		PaidOn         string     `json:"paid_on"`
-		Description    string     `json:"description"`
-		ExchangeRate   string     `json:"exchange_rate"`
-		IdempotencyKey string     `json:"idempotency_key"`
-	}
+	var req paymentRequest
 	if writeBadRequest(w, decodeJSON(w, r, &req)) {
 		return
 	}
-	var key *string
-	if req.IdempotencyKey != "" {
-		if len(req.IdempotencyKey) > 100 {
-			writeBadRequest(w, badRequest("idempotency_key must be at most 100 characters"))
-			return
-		}
-		key = &req.IdempotencyKey
+	key, err := idempotencyKey(req.IdempotencyKey)
+	if writeBadRequest(w, err) {
+		return
 	}
 	curs, err := a.currencies.get(ctx, a.db)
 	if err != nil {
@@ -704,57 +820,15 @@ func (a *api) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		b := &txBuilder{a: a, db: tx, m: m, curs: curs}
-		day, err := parseDate("paid_on", req.PaidOn)
+		t, amount, err := b.paymentTx(ctx, o, req, o.Outstanding())
 		if err != nil {
 			return err
 		}
-		b.day = day
-		acc, err := b.account(ctx, req.AccountID, "account_id")
+		txID, err := store.InsertTransaction(ctx, tx, m.ID, t)
 		if err != nil {
 			return err
 		}
-		if acc.Currency != o.Currency {
-			return txError{http.StatusBadRequest, "currency_mismatch", "the account's currency must be the debt's currency (" + o.Currency + ")"}
-		}
-		cur := curs[o.Currency]
-		amount, err := parseAmount("amount", req.Amount, cur, false)
-		if err != nil {
-			return err
-		}
-		if amount.GreaterThan(o.Outstanding()) {
-			return txError{http.StatusConflict, "overpayment",
-				"amount is more than the outstanding " + formatAmount(o.Outstanding(), cur.Precision)}
-		}
-		desc, err := cleanName(req.Description, "description", false, 200)
-		if err != nil {
-			return err
-		}
-		if desc == "" {
-			desc = o.Description
-		}
-		rate, err := b.rate(ctx, o.Currency, req.ExchangeRate)
-		if err != nil {
-			return err
-		}
-		// Paying a payable: cash out (-), payable down (+). Collecting a
-		// receivable: cash in (+), receivable down (-). Nets to zero.
-		cash := amount
-		if o.Direction == store.Payable {
-			cash = amount.Neg()
-		}
-		base := cash.Mul(rate).Round(curs[m.BaseCurrency].Precision)
-		userID := userIDFrom(ctx)
-		txID, err := store.InsertTransaction(ctx, tx, m.ID, store.Transaction{
-			Type: store.TxSettlement, OccurredOn: day, Description: desc, CreatedBy: userID,
-			Entries: []store.Entry{
-				{AccountID: &acc.ID, Amount: cash, Currency: o.Currency, ExchangeRate: rate, BaseAmount: base},
-				{ObligationID: &o.ID, Amount: cash.Neg(), Currency: o.Currency, ExchangeRate: rate, BaseAmount: base.Neg()},
-			},
-		})
-		if err != nil {
-			return err
-		}
-		if _, err := store.InsertPayment(ctx, tx, m.ID, o.ID, txID, amount, day, key, userID); err != nil {
+		if _, err := store.InsertPayment(ctx, tx, m.ID, o.ID, txID, amount, t.OccurredOn, key, t.CreatedBy); err != nil {
 			return err
 		}
 		return b.saveRates(ctx, tx)
@@ -764,6 +838,65 @@ func (a *api) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeObligation(w, r, status, obID)
+}
+
+// PUT /v1/workspaces/{workspaceID}/obligations/{obligationID}/payments/{paymentID} (editor)
+// {account_id, amount, paid_on, paid_time?, description?, exchange_rate?}
+//
+// Changes a payment. Its SETTLEMENT transaction is rewritten in place (same
+// id), so balances follow. The new amount can't exceed what's outstanding
+// plus the payment's old amount.
+func (a *api) handleUpdatePayment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	m := membershipFrom(ctx)
+	obID, ok1 := uuidParam(r, "obligationID")
+	pmID, ok2 := uuidParam(r, "paymentID")
+	if !ok1 || !ok2 {
+		writeError(w, http.StatusNotFound, "payment_not_found", "payment not found")
+		return
+	}
+	var req paymentRequest
+	if writeBadRequest(w, decodeJSON(w, r, &req)) {
+		return
+	}
+	curs, err := a.currencies.get(ctx, a.db)
+	if err != nil {
+		a.internalError(w, r, err)
+		return
+	}
+	err = store.InTx(ctx, a.pool, func(tx pgx.Tx) error {
+		if err := store.LockObligation(ctx, tx, m.ID, obID); err != nil {
+			return err
+		}
+		pm, err := store.GetPayment(ctx, tx, m.ID, obID, pmID)
+		if errors.Is(err, store.ErrNotFound) {
+			return txError{http.StatusNotFound, "payment_not_found", "payment not found"}
+		}
+		if err != nil {
+			return err
+		}
+		o, err := store.GetObligation(ctx, tx, m.ID, obID)
+		if err != nil {
+			return err
+		}
+		b := &txBuilder{a: a, db: tx, m: m, curs: curs}
+		t, amount, err := b.paymentTx(ctx, o, req, o.Outstanding().Add(pm.Amount))
+		if err != nil {
+			return err
+		}
+		if err := store.ReplaceTransaction(ctx, tx, m.ID, pm.TransactionID, t); err != nil {
+			return err
+		}
+		if err := store.UpdatePayment(ctx, tx, m.ID, pm.ID, amount, t.OccurredOn); err != nil {
+			return err
+		}
+		return b.saveRates(ctx, tx)
+	})
+	if err != nil {
+		a.writeObligationError(w, r, err)
+		return
+	}
+	a.writeObligation(w, r, http.StatusOK, obID)
 }
 
 // DELETE /v1/workspaces/{workspaceID}/obligations/{obligationID}/payments/{paymentID} (editor)

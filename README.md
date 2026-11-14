@@ -89,9 +89,11 @@ Financial data (every member reads; editors and owners write):
 | `GET`, `POST /v1/workspaces/{id}/contacts`, `PUT …/contacts/{contactID}` | Suppliers, customers, lenders: `{name, notes?, archived?}` |
 | `GET /v1/workspaces/{id}/obligations` | Debts. Filters: `direction` (`PAYABLE`\|`RECEIVABLE`), `contact_id`, `status` (`open`\|`paid`), `today` |
 | `POST /v1/workspaces/{id}/obligations` | See below |
-| `GET`, `PUT`, `DELETE /v1/workspaces/{id}/obligations/{obligationID}` | GET includes `payments`. PUT replaces `{description, due_on, contact_id \| contact_name}`. DELETE only without payments, and removes its transaction too |
-| `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, description?, exchange_rate?, idempotency_key?}`: pays or collects. Returns the debt |
-| `DELETE …/obligations/{obligationID}/payments/{paymentID}` | Undo a payment |
+| `GET`, `PUT`, `DELETE /v1/workspaces/{id}/obligations/{obligationID}` | GET includes `payments` and `increases`. PUT replaces `{description, due_on, contact_id \| contact_name}`. DELETE only without payments, and removes its transaction and increases too |
+| `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, paid_time?, description?, exchange_rate?, idempotency_key?}`: pays or collects. Returns the debt |
+| `PUT`, `DELETE …/obligations/{obligationID}/payments/{paymentID}` | PUT edits a payment (same body, no key); its transaction is rewritten in place. DELETE undoes it |
+| `POST …/obligations/{obligationID}/increases` | `{kind, amount, occurred_on, occurred_time?, description?, account_id?, category_id?, exchange_rate?, idempotency_key?}`: the debt grows. `MONEY` (needs `account_id`): borrowed or lent more, a `LOAN` transaction. `CHARGE` (optional `category_id`): bought or sold more on credit, interest, fees; an `EXPENSE`/`INCOME` with no cash. `ADJUSTMENT`: a correction, no transaction |
+| `PUT`, `DELETE …/obligations/{obligationID}/increases/{increaseID}` | Edit (kind can't change) or remove an increase. Refused with `below_paid` if the debt would drop under what's paid |
 | `GET /v1/workspaces/{id}/summary` | Home: balances, income and expenses for `from`–`to` (default this month), open payables and receivables, `net_worth`, next 5 `upcoming_due`, `missing_rates` |
 | `GET /v1/workspaces/{id}/reports/categories` | `type=EXPENSE\|INCOME`, `from`, `to`: totals and share per category, with subcategories rolled into their parent. `parent_id` breaks one parent down by subcategory |
 | `GET /v1/workspaces/{id}/reports/monthly` | `months=6`: income, expenses and net per month, oldest first |
@@ -130,6 +132,7 @@ Routes that show what's overdue take `today=YYYY-MM-DD` so the client's local da
 - `exchange_rate` means "1 account currency = rate base currency". When it's omitted, the latest saved rate on or before the date is used, and any rate you send is saved for next time.
 - A transfer gives both entries the same base value, so it never counts as income or expense. Balances are always computed and never stored.
 - A debt is counted once, when it starts. A purchase on credit is one `EXPENSE` for the full price, made of the cash paid now plus the payable for the rest. Paying the payable later is a `SETTLEMENT` (cash out, payable down) that nets to zero, so it is never a second expense. Sales mirror this with `INCOME`. Loans are `LOAN` transactions, which are neither income nor expense.
+- A debt's `total` is `original_amount` plus `increased`; what's still owed is `total` minus `paid`.
 - What's still owed, the status (`UNPAID`, `PARTIALLY_PAID`, `PAID`) and `overdue` are computed from the payments, never stored. A payment can't be more than what's outstanding, must use an account in the debt's currency, and retrying with the same `idempotency_key` doesn't pay twice.
 - Transactions created by a debt can only be changed through the debt (`409 managed_by_obligation`).
 - Archived accounts and categories keep their history but can't be used for new transactions.

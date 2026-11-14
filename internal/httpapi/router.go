@@ -162,7 +162,11 @@ func NewRouter(d Deps) http.Handler {
 				r.With(editor).Put("/obligations/{obligationID}", a.handleUpdateObligation)
 				r.With(editor).Delete("/obligations/{obligationID}", a.handleDeleteObligation)
 				r.With(editor).Post("/obligations/{obligationID}/payments", a.handleCreatePayment)
+				r.With(editor).Put("/obligations/{obligationID}/payments/{paymentID}", a.handleUpdatePayment)
 				r.With(editor).Delete("/obligations/{obligationID}/payments/{paymentID}", a.handleDeletePayment)
+				r.With(editor).Post("/obligations/{obligationID}/increases", a.handleCreateIncrease)
+				r.With(editor).Put("/obligations/{obligationID}/increases/{increaseID}", a.handleUpdateIncrease)
+				r.With(editor).Delete("/obligations/{obligationID}/increases/{increaseID}", a.handleDeleteIncrease)
 
 				r.Get("/summary", a.handleSummary)
 				r.Get("/reports/categories", a.handleCategoryReport)
