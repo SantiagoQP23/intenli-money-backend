@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	"github.com/SantiagoQP23/intenli-money-backend/internal/defaults"
@@ -222,13 +225,14 @@ func (a *api) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 type categoryDTO struct {
 	ID       uuid.UUID          `json:"id"`
 	Kind     store.CategoryKind `json:"kind"`
+	ParentID *uuid.UUID         `json:"parent_id"` // set on a subcategory
 	Name     string             `json:"name"`
 	Icon     *string            `json:"icon"`
 	Archived bool               `json:"archived"`
 }
 
 func toCategoryDTO(c store.Category) categoryDTO {
-	return categoryDTO{ID: c.ID, Kind: c.Kind, Name: c.Name, Icon: c.Icon, Archived: c.ArchivedAt != nil}
+	return categoryDTO{ID: c.ID, Kind: c.Kind, ParentID: c.ParentID, Name: c.Name, Icon: c.Icon, Archived: c.ArchivedAt != nil}
 }
 
 // checkIcon accepts a nil or known icon; "" is allowed when clearing is.
@@ -259,16 +263,49 @@ func (a *api) handleListCategories(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listDTO[categoryDTO]{Data: out})
 }
 
+// checkParent loads a category that another one should sit under. It must be
+// an active top-level category of kind (any kind when kind is "").
+func (a *api) checkParent(ctx context.Context, workspaceID, id uuid.UUID, kind store.CategoryKind) (store.Category, error) {
+	p, err := store.GetCategory(ctx, a.pool, workspaceID, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return p, txError{http.StatusBadRequest, "parent_not_found", "parent_id is not a category in this workspace"}
+	case err != nil:
+		return p, err
+	case p.ParentID != nil:
+		return p, txError{http.StatusBadRequest, "parent_is_subcategory", "a subcategory can't have subcategories"}
+	case kind != "" && p.Kind != kind:
+		return p, txError{http.StatusBadRequest, "parent_kind_mismatch", "the parent category is of another kind"}
+	case p.ArchivedAt != nil:
+		return p, txError{http.StatusConflict, "parent_archived", "the parent category is archived"}
+	}
+	return p, nil
+}
+
+// writeCategoryError writes a txError or an internal error.
+func (a *api) writeCategoryError(w http.ResponseWriter, r *http.Request, err error) {
+	var te txError
+	if errors.As(err, &te) {
+		writeError(w, te.status, te.code, te.message)
+		return
+	}
+	a.internalError(w, r, err)
+}
+
 // POST /v1/workspaces/{workspaceID}/categories (editor)
+// {kind, name, icon?, parent_id?}. A subcategory takes its parent's kind
+// when kind is omitted.
 func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	m := membershipFrom(ctx)
 	var req struct {
-		Kind store.CategoryKind `json:"kind"`
-		Name string             `json:"name"`
-		Icon *string            `json:"icon"`
+		Kind     store.CategoryKind `json:"kind"`
+		Name     string             `json:"name"`
+		Icon     *string            `json:"icon"`
+		ParentID *uuid.UUID         `json:"parent_id"`
 	}
 	err := decodeJSON(w, r, &req)
-	if err == nil && req.Kind != store.CategoryIncome && req.Kind != store.CategoryExpense {
+	if err == nil && req.Kind != store.CategoryIncome && req.Kind != store.CategoryExpense && !(req.Kind == "" && req.ParentID != nil) {
 		err = badRequest("kind must be INCOME or EXPENSE")
 	}
 	if err == nil {
@@ -280,7 +317,15 @@ func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	if writeBadRequest(w, err) {
 		return
 	}
-	c, err := store.CreateCategory(ctx, a.pool, membershipFrom(ctx).ID, req.Kind, req.Name, req.Icon)
+	if req.ParentID != nil {
+		p, err := a.checkParent(ctx, m.ID, *req.ParentID, req.Kind)
+		if err != nil {
+			a.writeCategoryError(w, r, err)
+			return
+		}
+		req.Kind = p.Kind
+	}
+	c, err := store.CreateCategory(ctx, a.pool, m.ID, req.Kind, req.ParentID, req.Name, req.Icon)
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "category_exists", "a category with this name already exists")
 		return
@@ -293,17 +338,21 @@ func (a *api) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /v1/workspaces/{workspaceID}/categories/{categoryID} (editor)
-// {name, icon?}
+// {name, icon?, parent_id?}. parent_id moves it: omit to keep, null to make
+// it a top-level category, or a top-level category of the same kind. A
+// category with subcategories can't move under another.
 func (a *api) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	m := membershipFrom(ctx)
 	id, ok := uuidParam(r, "categoryID")
 	if !ok {
 		writeError(w, http.StatusNotFound, "category_not_found", "category not found")
 		return
 	}
 	var req struct {
-		Name string  `json:"name"`
-		Icon *string `json:"icon"` // omit to keep, "" to clear
+		Name     string          `json:"name"`
+		Icon     *string         `json:"icon"` // omit to keep, "" to clear
+		ParentID json.RawMessage `json:"parent_id"`
 	}
 	err := decodeJSON(w, r, &req)
 	if err == nil {
@@ -312,10 +361,24 @@ func (a *api) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = checkIcon(req.Icon, true)
 	}
+	u := store.CategoryUpdate{Name: req.Name, Icon: req.Icon}
+	if err == nil && req.ParentID != nil {
+		var parent *uuid.UUID
+		if json.Unmarshal(req.ParentID, &parent) != nil {
+			err = badRequest("parent_id must be a category id or null")
+		}
+		u.MoveTo = &parent
+	}
 	if writeBadRequest(w, err) {
 		return
 	}
-	switch err := store.UpdateCategory(ctx, a.pool, membershipFrom(ctx).ID, id, req.Name, req.Icon); {
+	if u.MoveTo != nil {
+		if err := a.checkMove(ctx, m.ID, id, *u.MoveTo); err != nil {
+			a.writeCategoryError(w, r, err)
+			return
+		}
+	}
+	switch err := store.UpdateCategory(ctx, a.pool, m.ID, id, u); {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "category_not_found", "category not found")
 	case errors.Is(err, store.ErrConflict):
@@ -327,7 +390,30 @@ func (a *api) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// DELETE /v1/workspaces/{workspaceID}/categories/{categoryID} (editor) archives it.
+// checkMove checks that category id may sit under parent (nil: top level).
+func (a *api) checkMove(ctx context.Context, workspaceID, id uuid.UUID, parent *uuid.UUID) error {
+	c, err := store.GetCategory(ctx, a.pool, workspaceID, id)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && c.ArchivedAt != nil) {
+		return txError{http.StatusNotFound, "category_not_found", "category not found"}
+	}
+	if err != nil || parent == nil {
+		return err
+	}
+	if *parent == id {
+		return txError{http.StatusBadRequest, "parent_is_self", "a category can't be its own parent"}
+	}
+	if _, err := a.checkParent(ctx, workspaceID, *parent, c.Kind); err != nil {
+		return err
+	}
+	has, err := store.HasSubcategories(ctx, a.pool, workspaceID, id)
+	if err == nil && has {
+		return txError{http.StatusConflict, "category_has_subcategories", "a category with subcategories can't become a subcategory"}
+	}
+	return err
+}
+
+// DELETE /v1/workspaces/{workspaceID}/categories/{categoryID} (editor)
+// archives it, along with its subcategories.
 func (a *api) handleArchiveCategory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, ok := uuidParam(r, "categoryID")
@@ -346,7 +432,7 @@ func (a *api) handleArchiveCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /v1/workspaces/{workspaceID}/categories/{categoryID}/restore (editor)
-// un-archives it.
+// un-archives it, and the subcategories archived along with it.
 func (a *api) handleRestoreCategory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, ok := uuidParam(r, "categoryID")
@@ -354,9 +440,14 @@ func (a *api) handleRestoreCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "category_not_found", "category not found")
 		return
 	}
-	switch err := store.RestoreCategory(ctx, a.pool, membershipFrom(ctx).ID, id); {
+	err := store.InTx(ctx, a.pool, func(tx pgx.Tx) error {
+		return store.RestoreCategory(ctx, tx, membershipFrom(ctx).ID, id)
+	})
+	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "category_not_found", "archived category not found")
+	case errors.Is(err, store.ErrParentArchived):
+		writeError(w, http.StatusConflict, "parent_archived", "restore the parent category first")
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, "category_exists", "an active category with this name already exists")
 	case err != nil:

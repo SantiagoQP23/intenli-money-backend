@@ -77,12 +77,12 @@ Financial data (every member reads; editors and owners write):
 | `GET /v1/currencies` | Supported currencies with their decimal places (no sign-in needed) |
 | `GET`, `POST /v1/workspaces/{id}/accounts` | `{name, type: CASH\|BANK\|SAVINGS\|WALLET\|CREDIT_CARD, currency?, opening_balance?}`. Each account includes its `balance` |
 | `GET`, `PATCH /v1/workspaces/{id}/accounts/{accountID}` | `{name?, type?, opening_balance?, archived?}`. Currency is fixed |
-| `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name, icon?}`. New workspaces start with defaults for their type (`internal/defaults`) |
+| `GET`, `POST /v1/workspaces/{id}/categories` | `{kind: INCOME\|EXPENSE, name, icon?, parent_id?}`. `parent_id` makes a subcategory of an active top-level category of the same kind (one level only; `kind` may be omitted then). The list is flat; subcategories carry `parent_id`. New workspaces start with defaults for their type (`internal/defaults`) |
 | `GET /v1/category-icons` | Icons a category may use, in picker order (no sign-in needed) |
-| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename `{name, icon?}` (`""` clears the icon) / archive (past transactions keep it) |
-| `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive. `409 category_exists` if an active one has the name |
+| `PATCH`, `DELETE /v1/workspaces/{id}/categories/{categoryID}` | Rename `{name, icon?, parent_id?}` (`""` clears the icon; `parent_id` moves it, `null` = top level; `409 category_has_subcategories` when moving a parent) / archive, with its subcategories (past transactions keep them) |
+| `POST /v1/workspaces/{id}/categories/{categoryID}/restore` | Un-archive, with the subcategories archived along with it. `409 category_exists` if an active sibling has the name, `409 parent_archived` for a subcategory whose parent is archived |
 | `GET`, `PUT /v1/workspaces/{id}/exchange-rates` | Latest rate per currency / `{currency, rate, effective_on?}` |
-| `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id`, `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
+| `GET /v1/workspaces/{id}/transactions` | Newest first (by `occurred_on`, then `occurred_time`, where no time counts as 00:00). Filters: `account_id`, `category_id` (a parent includes its subcategories), `type`, `from`, `to`. Paging: `limit`, `cursor` (`next_cursor`) |
 | `GET /v1/workspaces/{id}/transactions/totals` | Totals strip for `from`–`to` (default this month): `{currency, income, expenses, net}`. Without `account_id`, income and expenses in the base currency (`type` narrows to one). With `account_id`, money in and out of that account in its currency, every type counted, so `net` is the balance change |
 | `POST /v1/workspaces/{id}/transactions` | See below |
 | `GET`, `PUT`, `DELETE /v1/workspaces/{id}/transactions/{transactionID}` | PUT replaces it (same body as POST). DELETE is a soft delete |
@@ -93,7 +93,7 @@ Financial data (every member reads; editors and owners write):
 | `POST /v1/workspaces/{id}/obligations/{obligationID}/payments` | `{account_id, amount, paid_on, description?, exchange_rate?, idempotency_key?}`: pays or collects. Returns the debt |
 | `DELETE …/obligations/{obligationID}/payments/{paymentID}` | Undo a payment |
 | `GET /v1/workspaces/{id}/summary` | Home: balances, income and expenses for `from`–`to` (default this month), open payables and receivables, `net_worth`, next 5 `upcoming_due`, `missing_rates` |
-| `GET /v1/workspaces/{id}/reports/categories` | `type=EXPENSE\|INCOME`, `from`, `to`: totals and share per category |
+| `GET /v1/workspaces/{id}/reports/categories` | `type=EXPENSE\|INCOME`, `from`, `to`: totals and share per category, with subcategories rolled into their parent. `parent_id` breaks one parent down by subcategory |
 | `GET /v1/workspaces/{id}/reports/monthly` | `months=6`: income, expenses and net per month, oldest first |
 
 Transaction bodies:

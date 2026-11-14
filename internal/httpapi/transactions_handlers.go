@@ -337,7 +337,8 @@ func toTransactionDTO(t store.Transaction, curs map[string]store.Currency, base 
 // ---- Handlers ----
 
 // GET /v1/workspaces/{workspaceID}/transactions
-// Filters: account_id, category_id, type, from, to (dates). Paging: limit
+// Filters: account_id, category_id (a parent includes its subcategories),
+// type, from, to (dates). Paging: limit
 // (default 50, max 200) and cursor (next_cursor from the previous page).
 func (a *api) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

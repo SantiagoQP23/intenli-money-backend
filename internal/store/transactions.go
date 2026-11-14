@@ -159,7 +159,8 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		add("EXISTS (SELECT 1 FROM transaction_entries e WHERE e.transaction_id = t.id AND e.account_id = $%d)", *f.AccountID)
 	}
 	if f.CategoryID != nil {
-		add("t.category_id = $%d", *f.CategoryID)
+		// A parent category also matches its subcategories.
+		add("t.category_id IN (SELECT id FROM categories WHERE id = $%[1]d OR parent_id = $%[1]d)", *f.CategoryID)
 	}
 	if f.Type != nil {
 		add("t.type = $%d", *f.Type)
