@@ -165,6 +165,7 @@ type paymentDTO struct {
 	PaidOn        string     `json:"paid_on"`
 	PaidTime      *string    `json:"paid_time"`
 	Description   string     `json:"description"`
+	BoxID         *uuid.UUID `json:"box_id"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
@@ -229,7 +230,7 @@ func toPaymentDTO(pm store.Payment, cur store.Currency) paymentDTO {
 	return paymentDTO{
 		ID: pm.ID, TransactionID: pm.TransactionID, AccountID: pm.AccountID,
 		Amount: formatAmount(pm.Amount, cur.Precision), PaidOn: pm.PaidOn.Format(time.DateOnly),
-		PaidTime: pm.PaidTime, Description: pm.Description, CreatedAt: pm.CreatedAt,
+		PaidTime: pm.PaidTime, Description: pm.Description, BoxID: pm.BoxID, CreatedAt: pm.CreatedAt,
 	}
 }
 
@@ -698,6 +699,7 @@ type paymentRequest struct {
 	PaidTime       *string    `json:"paid_time"`
 	Description    string     `json:"description"`
 	ExchangeRate   string     `json:"exchange_rate"`
+	BoxID          *uuid.UUID `json:"box_id"` // pay from (or collect into) a box
 	IdempotencyKey string     `json:"idempotency_key"`
 }
 
@@ -738,6 +740,10 @@ func (b *txBuilder) paymentTx(ctx context.Context, o store.Obligation, req payme
 	if desc == "" {
 		desc = o.Description
 	}
+	boxID, err := b.box(ctx, req.BoxID, o.Currency)
+	if err != nil {
+		return t, decimal.Zero, err
+	}
 	rate, err := b.rate(ctx, o.Currency, req.ExchangeRate)
 	if err != nil {
 		return t, decimal.Zero, err
@@ -750,7 +756,7 @@ func (b *txBuilder) paymentTx(ctx context.Context, o store.Obligation, req payme
 	}
 	base := cash.Mul(rate).Round(b.curs[b.m.BaseCurrency].Precision)
 	t = store.Transaction{
-		Type: store.TxSettlement, OccurredOn: day, OccurredTime: tod, Description: desc, CreatedBy: userIDFrom(ctx),
+		Type: store.TxSettlement, OccurredOn: day, OccurredTime: tod, Description: desc, BoxID: boxID, CreatedBy: userIDFrom(ctx),
 		Entries: []store.Entry{
 			{AccountID: &acc.ID, Amount: cash, Currency: o.Currency, ExchangeRate: rate, BaseAmount: base},
 			{ObligationID: &o.ID, Amount: cash.Neg(), Currency: o.Currency, ExchangeRate: rate, BaseAmount: base.Neg()},
@@ -879,7 +885,7 @@ func (a *api) handleUpdatePayment(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		b := &txBuilder{a: a, db: tx, m: m, curs: curs}
+		b := &txBuilder{a: a, db: tx, m: m, curs: curs, keepBoxID: pm.BoxID}
 		t, amount, err := b.paymentTx(ctx, o, req, o.Outstanding().Add(pm.Amount))
 		if err != nil {
 			return err

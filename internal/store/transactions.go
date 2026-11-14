@@ -47,10 +47,13 @@ type Transaction struct {
 	OccurredTime *string
 	Description  string
 	CategoryID   *uuid.UUID
-	Entries      []Entry
-	CreatedBy    uuid.UUID
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// BoxID links the transaction to a box: its account entries change the
+	// box's balance instead of the wallet's.
+	BoxID     *uuid.UUID
+	Entries   []Entry
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func insertEntries(ctx context.Context, db DB, workspaceID, txID uuid.UUID, entries []Entry) error {
@@ -68,9 +71,9 @@ func insertEntries(ctx context.Context, db DB, workspaceID, txID uuid.UUID, entr
 func InsertTransaction(ctx context.Context, db DB, workspaceID uuid.UUID, t Transaction) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := db.QueryRow(ctx,
-		`INSERT INTO transactions (workspace_id, type, occurred_on, occurred_time, description, category_id, created_by)
-		 VALUES ($1, $2, $3, $4::time, $5, $6, $7) RETURNING id`,
-		workspaceID, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID, t.CreatedBy).Scan(&id)
+		`INSERT INTO transactions (workspace_id, type, occurred_on, occurred_time, description, category_id, box_id, created_by)
+		 VALUES ($1, $2, $3, $4::time, $5, $6, $7, $8) RETURNING id`,
+		workspaceID, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID, t.BoxID, t.CreatedBy).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -90,9 +93,9 @@ func LockTransaction(ctx context.Context, db DB, workspaceID, id uuid.UUID) erro
 func ReplaceTransaction(ctx context.Context, db DB, workspaceID, id uuid.UUID, t Transaction) error {
 	tag, err := db.Exec(ctx,
 		`UPDATE transactions SET type = $3, occurred_on = $4, occurred_time = $5::time, description = $6, category_id = $7,
-		   updated_at = now()
+		   box_id = $8, updated_at = now()
 		 WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-		workspaceID, id, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID)
+		workspaceID, id, t.Type, t.OccurredOn, t.OccurredTime, t.Description, t.CategoryID, t.BoxID)
 	if err != nil {
 		return err
 	}
@@ -138,6 +141,7 @@ type TxFilter struct {
 	ID         *uuid.UUID
 	AccountID  *uuid.UUID
 	CategoryID *uuid.UUID
+	BoxID      *uuid.UUID
 	Type       *TxType
 	From, To   *time.Time // inclusive dates
 	After      *TxCursor
@@ -162,6 +166,9 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 		// A parent category also matches its subcategories.
 		add("t.category_id IN (SELECT id FROM categories WHERE id = $%[1]d OR parent_id = $%[1]d)", *f.CategoryID)
 	}
+	if f.BoxID != nil {
+		add("t.box_id = $%d", *f.BoxID)
+	}
 	if f.Type != nil {
 		add("t.type = $%d", *f.Type)
 	}
@@ -179,7 +186,7 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 	args = append(args, f.Limit)
 
 	rows, err := db.Query(ctx, fmt.Sprintf(
-		`SELECT t.id, t.type, t.occurred_on, to_char(t.occurred_time, 'HH24:MI'), t.description, t.category_id, t.created_by, t.created_at, t.updated_at
+		`SELECT t.id, t.type, t.occurred_on, to_char(t.occurred_time, 'HH24:MI'), t.description, t.category_id, t.box_id, t.created_by, t.created_at, t.updated_at
 		 FROM transactions t WHERE %s
 		 ORDER BY t.occurred_on DESC, coalesce(t.occurred_time, '00:00') DESC, t.created_at DESC, t.id DESC LIMIT $%d`,
 		strings.Join(where, " AND "), len(args)), args...)
@@ -190,7 +197,7 @@ func ListTransactions(ctx context.Context, db DB, workspaceID uuid.UUID, f TxFil
 	index := map[uuid.UUID]int{}
 	for rows.Next() {
 		var t Transaction
-		if err := rows.Scan(&t.ID, &t.Type, &t.OccurredOn, &t.OccurredTime, &t.Description, &t.CategoryID, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &t.OccurredOn, &t.OccurredTime, &t.Description, &t.CategoryID, &t.BoxID, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

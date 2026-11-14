@@ -228,19 +228,20 @@ type Payment struct {
 	PaidOn        time.Time
 	PaidTime      *string // "15:04", from the transaction
 	Description   string  // the transaction's
+	BoxID         *uuid.UUID
 	CreatedAt     time.Time
 }
 
 const paymentSelect = `
 	SELECT p.id, p.obligation_id, p.transaction_id,
 	       (SELECT e.account_id FROM transaction_entries e WHERE e.transaction_id = p.transaction_id AND e.account_id IS NOT NULL LIMIT 1),
-	       p.amount::text, p.paid_on, to_char(t.occurred_time, 'HH24:MI'), t.description, p.created_at
+	       p.amount::text, p.paid_on, to_char(t.occurred_time, 'HH24:MI'), t.description, t.box_id, p.created_at
 	FROM obligation_payments p JOIN transactions t ON t.id = p.transaction_id`
 
 func scanPayment(row pgx.Row) (Payment, error) {
 	var p Payment
 	var amount string
-	if err := row.Scan(&p.ID, &p.ObligationID, &p.TransactionID, &p.AccountID, &amount, &p.PaidOn, &p.PaidTime, &p.Description, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.ObligationID, &p.TransactionID, &p.AccountID, &amount, &p.PaidOn, &p.PaidTime, &p.Description, &p.BoxID, &p.CreatedAt); err != nil {
 		return Payment{}, notFound(err)
 	}
 	p.Amount = decimal.RequireFromString(amount)

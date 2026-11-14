@@ -168,6 +168,17 @@ func NewRouter(d Deps) http.Handler {
 				r.With(editor).Put("/obligations/{obligationID}/increases/{increaseID}", a.handleUpdateIncrease)
 				r.With(editor).Delete("/obligations/{obligationID}/increases/{increaseID}", a.handleDeleteIncrease)
 
+				r.Get("/boxes", a.handleListBoxes)
+				r.With(editor).Post("/boxes", a.handleCreateBox)
+				r.With(editor).Post("/boxes/moves", a.handleMoveBoxes)
+				r.With(editor).Post("/boxes/fill", a.handleFillBoxes)
+				r.Get("/boxes/{boxID}", a.handleGetBox)
+				r.With(editor).Put("/boxes/{boxID}", a.handleUpdateBox)
+				r.With(editor).Post("/boxes/{boxID}/archive", a.handleArchiveBox)
+				r.With(editor).Post("/boxes/{boxID}/restore", a.handleRestoreBox)
+				r.With(editor).Post("/boxes/{boxID}/allocations", a.handleCreateAllocation)
+				r.With(editor).Delete("/boxes/{boxID}/allocations/{allocationID}", a.handleDeleteAllocation)
+
 				r.Get("/summary", a.handleSummary)
 				r.Get("/reports/categories", a.handleCategoryReport)
 				r.Get("/reports/monthly", a.handleMonthlyReport)
