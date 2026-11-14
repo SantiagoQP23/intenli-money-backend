@@ -191,7 +191,10 @@ func (a *api) handleSummary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /v1/workspaces/{workspaceID}/reports/categories?type=EXPENSE|INCOME&from&to
+// GET /v1/workspaces/{workspaceID}/reports/categories?type=EXPENSE|INCOME&from&to&parent_id
+//
+// Subcategories count toward their parent. parent_id breaks one parent down
+// into its subcategories (and itself, for transactions filed under it).
 func (a *api) handleCategoryReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	m := membershipFrom(ctx)
@@ -207,7 +210,16 @@ func (a *api) handleCategoryReport(w http.ResponseWriter, r *http.Request) {
 	if writeBadRequest(w, err) {
 		return
 	}
-	rows, err := store.CategoryTotals(ctx, a.db, m.ID, typ, from, to)
+	var within *uuid.UUID
+	if v := r.URL.Query().Get("parent_id"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			writeBadRequest(w, badRequest("parent_id must be a category id"))
+			return
+		}
+		within = &id
+	}
+	rows, err := store.CategoryTotals(ctx, a.db, m.ID, typ, from, to, within)
 	if err != nil {
 		a.internalError(w, r, err)
 		return

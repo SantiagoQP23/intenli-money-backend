@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -51,12 +54,17 @@ const (
 )
 
 type Category struct {
-	ID         uuid.UUID
-	Kind       CategoryKind
-	Name       string
-	Icon       *string
+	ID       uuid.UUID
+	Kind     CategoryKind
+	ParentID *uuid.UUID // set on a subcategory; subcategories have no children
+	Name     string
+	Icon     *string
+	// ArchivedAt is shared by a parent and the subcategories archived with it.
 	ArchivedAt *time.Time
 }
+
+// ErrParentArchived means a subcategory can't be restored before its parent.
+var ErrParentArchived = errors.New("parent category is archived")
 
 // CreateDefaultCategories seeds a new workspace with the defaults for its
 // type, named in locale ("es" or "en").
@@ -71,9 +79,18 @@ func CreateDefaultCategories(ctx context.Context, db DB, workspaceID uuid.UUID, 
 	return nil
 }
 
+const categoryCols = `id, kind, parent_id, name, icon, archived_at`
+
+func scanCategory(row pgx.Row) (Category, error) {
+	var c Category
+	err := row.Scan(&c.ID, &c.Kind, &c.ParentID, &c.Name, &c.Icon, &c.ArchivedAt)
+	return c, err
+}
+
+// ListCategories returns parents and subcategories in one flat list, by name.
 func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeArchived bool) ([]Category, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, kind, name, icon, archived_at FROM categories
+		`SELECT `+categoryCols+` FROM categories
 		 WHERE workspace_id = $1 AND ($2 OR archived_at IS NULL)
 		 ORDER BY kind, lower(name)`, workspaceID, includeArchived)
 	if err != nil {
@@ -82,8 +99,8 @@ func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeAr
 	defer rows.Close()
 	out := []Category{}
 	for rows.Next() {
-		var c Category
-		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.Icon, &c.ArchivedAt); err != nil {
+		c, err := scanCategory(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -92,34 +109,54 @@ func ListCategories(ctx context.Context, db DB, workspaceID uuid.UUID, includeAr
 }
 
 func GetCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) (Category, error) {
-	var c Category
-	err := db.QueryRow(ctx,
-		`SELECT id, kind, name, icon, archived_at FROM categories WHERE workspace_id = $1 AND id = $2`,
-		workspaceID, id).Scan(&c.ID, &c.Kind, &c.Name, &c.Icon, &c.ArchivedAt)
+	c, err := scanCategory(db.QueryRow(ctx,
+		`SELECT `+categoryCols+` FROM categories WHERE workspace_id = $1 AND id = $2`, workspaceID, id))
 	return c, notFound(err)
 }
 
-// CreateCategory returns ErrConflict when an active category of that kind
-// already has the name.
-func CreateCategory(ctx context.Context, db DB, workspaceID uuid.UUID, kind CategoryKind, name string, icon *string) (Category, error) {
-	c := Category{Kind: kind, Name: name, Icon: icon}
+// HasSubcategories reports whether any category, archived or not, sits
+// under id.
+func HasSubcategories(ctx context.Context, db DB, workspaceID, id uuid.UUID) (bool, error) {
+	var ok bool
 	err := db.QueryRow(ctx,
-		`INSERT INTO categories (workspace_id, kind, name, icon) VALUES ($1, $2, $3, $4) RETURNING id`,
-		workspaceID, kind, name, icon).Scan(&c.ID)
+		`SELECT EXISTS (SELECT 1 FROM categories WHERE workspace_id = $1 AND parent_id = $2)`,
+		workspaceID, id).Scan(&ok)
+	return ok, err
+}
+
+// CreateCategory returns ErrConflict when an active sibling (same kind and
+// parent) already has the name. The caller checks the parent.
+func CreateCategory(ctx context.Context, db DB, workspaceID uuid.UUID, kind CategoryKind, parentID *uuid.UUID, name string, icon *string) (Category, error) {
+	c := Category{Kind: kind, ParentID: parentID, Name: name, Icon: icon}
+	err := db.QueryRow(ctx,
+		`INSERT INTO categories (workspace_id, kind, parent_id, name, icon) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		workspaceID, kind, parentID, name, icon).Scan(&c.ID)
 	if isUniqueViolation(err) {
 		return Category{}, ErrConflict
 	}
 	return c, err
 }
 
-// UpdateCategory renames an active category and, when icon isn't nil, sets
-// its icon ("" clears it).
-func UpdateCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID, name string, icon *string) error {
+// CategoryUpdate changes an active category. Icon nil keeps it ("" clears
+// it); MoveTo nil keeps the parent, and a pointer to nil makes it top level.
+type CategoryUpdate struct {
+	Name   string
+	Icon   *string
+	MoveTo **uuid.UUID
+}
+
+// UpdateCategory applies u. The caller checks a new parent.
+func UpdateCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID, u CategoryUpdate) error {
+	var parent *uuid.UUID
+	if u.MoveTo != nil {
+		parent = *u.MoveTo
+	}
 	tag, err := db.Exec(ctx,
 		`UPDATE categories SET name = $3,
-		   icon = CASE WHEN $4::text IS NULL THEN icon ELSE NULLIF($4, '') END
+		   icon = CASE WHEN $4::text IS NULL THEN icon ELSE NULLIF($4, '') END,
+		   parent_id = CASE WHEN $5 THEN $6::uuid ELSE parent_id END
 		 WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL`,
-		workspaceID, id, name, icon)
+		workspaceID, id, u.Name, u.Icon, u.MoveTo != nil, parent)
 	if isUniqueViolation(err) {
 		return ErrConflict
 	}
@@ -129,29 +166,64 @@ func UpdateCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID, name 
 	return err
 }
 
-// ArchiveCategory hides it from pickers; past transactions keep it.
+// ArchiveCategory hides it, and its active subcategories, from pickers; past
+// transactions keep them. They share one archived_at so a restore brings
+// them back together.
 func ArchiveCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) error {
-	tag, err := db.Exec(ctx,
-		`UPDATE categories SET archived_at = now() WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL`,
-		workspaceID, id)
-	if err == nil && tag.RowsAffected() == 0 {
+	var n int
+	err := db.QueryRow(ctx,
+		`WITH p AS (
+		   UPDATE categories SET archived_at = now()
+		   WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL
+		   RETURNING id, archived_at
+		 ), children AS (
+		   UPDATE categories c SET archived_at = p.archived_at FROM p
+		   WHERE c.workspace_id = $1 AND c.parent_id = p.id AND c.archived_at IS NULL
+		   RETURNING c.id
+		 )
+		 SELECT count(*) FROM p`, workspaceID, id).Scan(&n)
+	if err == nil && n == 0 {
 		return ErrNotFound
 	}
 	return err
 }
 
-// RestoreCategory brings an archived category back. ErrConflict means an
-// active category of that kind already has the name.
+// RestoreCategory brings an archived category back, with the subcategories
+// that were archived along with it (skipping any whose name is now taken).
+// ErrConflict means an active sibling already has the name, and
+// ErrParentArchived that its parent must be restored first. Run it in a
+// transaction.
 func RestoreCategory(ctx context.Context, db DB, workspaceID, id uuid.UUID) error {
-	tag, err := db.Exec(ctx,
-		`UPDATE categories SET archived_at = NULL WHERE workspace_id = $1 AND id = $2 AND archived_at IS NOT NULL`,
-		workspaceID, id)
-	if isUniqueViolation(err) {
-		return ErrConflict
+	var archivedAt *time.Time
+	var parentArchived bool
+	err := db.QueryRow(ctx,
+		`SELECT c.archived_at, coalesce(p.archived_at IS NOT NULL, false)
+		 FROM categories c LEFT JOIN categories p ON p.id = c.parent_id
+		 WHERE c.workspace_id = $1 AND c.id = $2
+		 FOR UPDATE OF c`, workspaceID, id).Scan(&archivedAt, &parentArchived)
+	if err != nil {
+		return notFound(err)
 	}
-	if err == nil && tag.RowsAffected() == 0 {
+	if archivedAt == nil {
 		return ErrNotFound
 	}
+	if parentArchived {
+		return ErrParentArchived
+	}
+	if _, err := db.Exec(ctx,
+		`UPDATE categories SET archived_at = NULL WHERE workspace_id = $1 AND id = $2`, workspaceID, id); err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	_, err = db.Exec(ctx,
+		`UPDATE categories c SET archived_at = NULL
+		 WHERE c.workspace_id = $1 AND c.parent_id = $2 AND c.archived_at = $3
+		   AND NOT EXISTS (
+		     SELECT 1 FROM categories o
+		     WHERE o.workspace_id = $1 AND o.parent_id = $2 AND o.archived_at IS NULL
+		       AND lower(o.name) = lower(c.name))`, workspaceID, id, *archivedAt)
 	return err
 }
 

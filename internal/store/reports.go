@@ -39,15 +39,27 @@ type CategoryTotal struct {
 
 // CategoryTotals sums INCOME or EXPENSE transactions by category (positive
 // totals, largest first). Uncategorized ones have a nil CategoryID.
-func CategoryTotals(ctx context.Context, db DB, workspaceID uuid.UUID, typ TxType, from, to time.Time) ([]CategoryTotal, error) {
+// Subcategories roll up into their parent. With within set, it breaks that
+// parent down instead: one row per subcategory, plus one for the parent
+// itself when transactions use it directly.
+func CategoryTotals(ctx context.Context, db DB, workspaceID uuid.UUID, typ TxType, from, to time.Time, within *uuid.UUID) ([]CategoryTotal, error) {
+	group, filter := `coalesce(c.parent_id, c.id)`, `true`
+	if within != nil {
+		group, filter = `c.id`, `(c.id = $5 OR c.parent_id = $5)`
+	}
 	rows, err := db.Query(ctx,
-		`SELECT t.category_id, c.name, abs(sum(e.base_amount))::text, count(DISTINCT t.id)
-		 FROM transactions t
-		 JOIN transaction_entries e ON e.transaction_id = t.id
-		 LEFT JOIN categories c ON c.id = t.category_id
-		 WHERE t.workspace_id = $1 AND t.deleted_at IS NULL AND t.type = $2 AND t.occurred_on BETWEEN $3 AND $4
-		 GROUP BY t.category_id, c.name
-		 ORDER BY abs(sum(e.base_amount)) DESC`, workspaceID, typ, from, to)
+		`WITH totals AS (
+		   SELECT `+group+` AS category_id, abs(sum(e.base_amount)) AS total, count(DISTINCT t.id) AS n
+		   FROM transactions t
+		   JOIN transaction_entries e ON e.transaction_id = t.id
+		   LEFT JOIN categories c ON c.id = t.category_id
+		   WHERE t.workspace_id = $1 AND t.deleted_at IS NULL AND t.type = $2 AND t.occurred_on BETWEEN $3 AND $4
+		     AND `+filter+`
+		   GROUP BY 1
+		 )
+		 SELECT totals.category_id, c.name, totals.total::text, totals.n
+		 FROM totals LEFT JOIN categories c ON c.id = totals.category_id
+		 ORDER BY totals.total DESC`, append([]any{workspaceID, typ, from, to}, optionalArg(within)...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -131,4 +143,11 @@ func PeriodTotals(ctx context.Context, db DB, workspaceID uuid.UUID, accountID *
 		return IncomeExpense{}, err
 	}
 	return IncomeExpense{decimal.RequireFromString(in), decimal.RequireFromString(out)}, nil
+}
+
+func optionalArg(id *uuid.UUID) []any {
+	if id == nil {
+		return nil
+	}
+	return []any{*id}
 }
